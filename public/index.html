@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FilmPlus</title>
-    <link rel="stylesheet" href="/css/style.css?v=16">
+    <link rel="stylesheet" href="/css/style.css?v=17">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -21,6 +21,7 @@
             <li data-page="movies"><i class="fas fa-film"></i><span>Movies</span></li>
             <li data-page="tvshows"><i class="fas fa-tv"></i><span>TV Shows</span></li>
             <li data-page="genres"><i class="fas fa-th-large"></i><span>Genres</span></li>
+            <li data-page="countries"><i class="fas fa-globe"></i><span>Countries</span></li>
             <li data-page="search"><i class="fas fa-search"></i><span>Search</span></li>
             <li data-page="favorites"><i class="fas fa-heart"></i><span>Favorites</span></li>
             <li data-page="watchlist"><i class="fas fa-bookmark"></i><span>Watchlist</span></li>
@@ -164,6 +165,18 @@
                     <button class="genre-tab" data-type="tv">TV Shows</button>
                 </div>
                 <div id="genres-grid" class="genres-grid"></div>
+            </section>
+
+            <!-- Countries Page -->
+            <section id="page-countries" class="page">
+                <h1>Browse by Country / Language</h1>
+                <div class="genre-tabs">
+                    <button class="country-tab active" data-type="movie">Movies</button>
+                    <button class="country-tab" data-type="tv">TV Shows</button>
+                </div>
+                <div id="countries-grid" class="genres-grid"></div>
+                <div id="country-results" class="content-grid" style="margin-top:24px"></div>
+                <div id="country-load-more" class="load-more hidden"><button class="btn btn-secondary">Load More</button></div>
             </section>
 
             <!-- Search Page -->
@@ -444,9 +457,9 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.12/dist/hls.min.js"></script>
-    <script src="/js/api.js?v=9"></script>
-    <script src="/js/player.js?v=10"></script>
-    <script src="/js/app.js?v=14"></script>
+    <script src="/js/api.js?v=11"></script>
+    <script src="/js/player.js?v=11"></script>
+    <script src="/js/app.js?v=16"></script>
 
     <!-- Anti-popup & anti-redirect protection -->
     <script>

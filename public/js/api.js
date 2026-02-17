@@ -18,17 +18,31 @@ const API = {
     _cache: new Map(),
     _cacheTTL: 5 * 60 * 1000, // 5 min
 
-    async _fetch(endpoint) {
+    async _fetch(endpoint, { retries = 2, timeout = 20000 } = {}) {
         const cacheKey = endpoint;
         const cached = this._cache.get(cacheKey);
         if (cached && Date.now() - cached.time < this._cacheTTL) {
             return cached.data;
         }
-        const res = await fetch(`${this.BASE}${endpoint}`);
-        if (!res.ok) throw new Error(`API Error ${res.status}`);
-        const data = await res.json();
-        this._cache.set(cacheKey, { data, time: Date.now() });
-        return data;
+        let lastError;
+        for (let attempt = 0; attempt <= retries; attempt++) {
+            try {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), timeout);
+                const res = await fetch(`${this.BASE}${endpoint}`, { signal: controller.signal });
+                clearTimeout(timer);
+                if (!res.ok) throw new Error(`API Error ${res.status}`);
+                const data = await res.json();
+                this._cache.set(cacheKey, { data, time: Date.now() });
+                return data;
+            } catch (e) {
+                lastError = e;
+                if (attempt < retries) {
+                    await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+                }
+            }
+        }
+        throw lastError;
     },
 
     // ─── Trending ───
@@ -78,11 +92,12 @@ const API = {
     },
 
     // ─── Discover ───
-    async discover(type, { page = 1, genre, year, sort_by } = {}) {
+    async discover(type, { page = 1, genre, year, sort_by, language } = {}) {
         let url = `/api/discover/${type}?page=${page}`;
         if (genre) url += `&genre=${genre}`;
         if (year) url += `&year=${year}`;
         if (sort_by) url += `&sort_by=${sort_by}`;
+        if (language) url += `&language=${language}`;
         return this._fetch(url);
     },
 

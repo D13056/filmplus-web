@@ -138,9 +138,10 @@ app.get('/api/genres/:type', async (req, res) => {
 app.get('/api/discover/:type', async (req, res) => {
     try {
         const { type } = req.params;
-        const { page = 1, genre, year, sort_by } = req.query;
+        const { page = 1, genre, year, sort_by, language } = req.query;
         const params = { page };
         if (genre) params.with_genres = genre;
+        if (language) params.with_original_language = language;
         if (year) {
             if (type === 'movie') params.primary_release_year = year;
             else params.first_air_date_year = year;

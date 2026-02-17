@@ -67,6 +67,14 @@ const App = {
                 this.showPage('genres');
                 this.loadGenresPage();
                 break;
+            case 'countries':
+                this.showPage('countries');
+                this.loadCountriesPage();
+                break;
+            case 'country':
+                this.showPage('countries');
+                this.loadCountryContent(parts[1], parts[2] || 'movie');
+                break;
             case 'search':
                 this.showPage('search');
                 if (parts[1]) {
@@ -145,13 +153,16 @@ const App = {
         document.querySelector('.sidebar-settings').addEventListener('click', () => this.navigate('settings'));
 
         // Mobile menu toggle
-        document.getElementById('menu-toggle').addEventListener('click', () => {
+        document.getElementById('menu-toggle').addEventListener('click', (e) => {
+            e.stopPropagation();
             document.getElementById('sidebar').classList.toggle('open');
         });
 
         // Click outside sidebar to close on mobile
-        document.getElementById('main-content').addEventListener('click', () => {
-            document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('main-content').addEventListener('click', (e) => {
+            if (!e.target.closest('#menu-toggle')) {
+                document.getElementById('sidebar').classList.remove('open');
+            }
         });
 
         // Global search
@@ -286,6 +297,21 @@ const App = {
                 tab.classList.add('active');
                 this.loadGenresPage(tab.dataset.type);
             });
+        });
+
+        // Country tabs
+        document.querySelectorAll('.country-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.country-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById('countries-grid').classList.remove('hidden');
+                this.loadCountriesPage(tab.dataset.type);
+            });
+        });
+        // Country load more
+        document.querySelector('#country-load-more button').addEventListener('click', () => {
+            this._countryState.page++;
+            this.loadCountryContent(this._countryState.lang, this._countryState.type, false);
         });
 
         // Settings
@@ -632,6 +658,98 @@ const App = {
         `).join('');
     },
 
+    // ─── Countries / Language Page ───
+    _countries: [
+        { code: 'ko', name: 'Korean', flag: '🇰🇷', icon: 'fa-flag' },
+        { code: 'ja', name: 'Japanese', flag: '🇯🇵', icon: 'fa-torii-gate' },
+        { code: 'zh', name: 'Chinese', flag: '🇨🇳', icon: 'fa-yin-yang' },
+        { code: 'hi', name: 'Hindi', flag: '🇮🇳', icon: 'fa-om' },
+        { code: 'ta', name: 'Tamil', flag: '🇮🇳', icon: 'fa-film' },
+        { code: 'te', name: 'Telugu', flag: '🇮🇳', icon: 'fa-film' },
+        { code: 'ml', name: 'Malayalam', flag: '🇮🇳', icon: 'fa-film' },
+        { code: 'es', name: 'Spanish', flag: '🇪🇸', icon: 'fa-sun' },
+        { code: 'fr', name: 'French', flag: '🇫🇷', icon: 'fa-wine-glass' },
+        { code: 'de', name: 'German', flag: '🇩🇪', icon: 'fa-landmark' },
+        { code: 'it', name: 'Italian', flag: '🇮🇹', icon: 'fa-pizza-slice' },
+        { code: 'pt', name: 'Portuguese', flag: '🇧🇷', icon: 'fa-futbol' },
+        { code: 'tr', name: 'Turkish', flag: '🇹🇷', icon: 'fa-mosque' },
+        { code: 'th', name: 'Thai', flag: '🇹🇭', icon: 'fa-vihara' },
+        { code: 'tl', name: 'Filipino', flag: '🇵🇭', icon: 'fa-island-tropical' },
+        { code: 'id', name: 'Indonesian', flag: '🇮🇩', icon: 'fa-mountain' },
+        { code: 'ru', name: 'Russian', flag: '🇷🇺', icon: 'fa-snowflake' },
+        { code: 'ar', name: 'Arabic', flag: '🇸🇦', icon: 'fa-moon' },
+        { code: 'sv', name: 'Swedish', flag: '🇸🇪', icon: 'fa-crown' },
+        { code: 'da', name: 'Danish', flag: '🇩🇰', icon: 'fa-chess-rook' },
+        { code: 'no', name: 'Norwegian', flag: '🇳🇴', icon: 'fa-mountain-sun' },
+        { code: 'pl', name: 'Polish', flag: '🇵🇱', icon: 'fa-landmark-dome' },
+        { code: 'nl', name: 'Dutch', flag: '🇳🇱', icon: 'fa-wind' },
+        { code: 'cn', name: 'Cantonese', flag: '🇭🇰', icon: 'fa-city' }
+    ],
+    _countryState: { type: 'movie', lang: null, page: 1 },
+
+    loadCountriesPage(type) {
+        if (type) this._countryState.type = type;
+        const currentType = this._countryState.type;
+        // Update tab active state
+        document.querySelectorAll('.country-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.type === currentType);
+        });
+        const grid = document.getElementById('countries-grid');
+        grid.innerHTML = this._countries.map(c => `
+            <div class="genre-card" onclick="App.navigate('country/${c.code}/${currentType}')">
+                <span style="font-size:1.8rem">${c.flag}</span>
+                ${c.name}
+            </div>
+        `).join('');
+        // Clear previous results
+        document.getElementById('country-results').innerHTML = '';
+        document.getElementById('country-load-more').classList.add('hidden');
+    },
+
+    async loadCountryContent(langCode, type = 'movie', reset = true) {
+        this._countryState.lang = langCode;
+        this._countryState.type = type;
+        if (reset) this._countryState.page = 1;
+        const countryInfo = this._countries.find(c => c.code === langCode);
+        const label = countryInfo ? countryInfo.name : langCode.toUpperCase();
+        // Update heading
+        document.querySelector('#page-countries h1').textContent = `${countryInfo ? countryInfo.flag + ' ' : ''}${label} ${type === 'movie' ? 'Movies' : 'TV Shows'}`;
+        // Update tabs
+        document.querySelectorAll('.country-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.type === type);
+        });
+        // Rebind tabs to switch type within same country
+        document.querySelectorAll('.country-tab').forEach(t => {
+            t.onclick = () => this.navigate(`country/${langCode}/${t.dataset.type}`);
+        });
+        // Hide country cards, show results
+        document.getElementById('countries-grid').classList.add('hidden');
+        try {
+            const data = await API.discover(type, { page: this._countryState.page, language: langCode, sort_by: 'popularity.desc' });
+            this.renderGrid('country-results', data.results, type, !reset);
+            document.getElementById('country-load-more').classList.toggle('hidden', this._countryState.page >= data.total_pages);
+        } catch (e) {
+            this.showToast('Failed to load content', 'error');
+        }
+    },
+
+    // ─── Browse by Genre (from detail page clickable genres) ───
+    browseByGenre(genreId, genreName, type) {
+        const browseKey = type === 'movie' ? 'movies' : 'tv';
+        const page = type === 'movie' ? 'movies' : 'tvshows';
+        this.browseState[browseKey].genre = String(genreId);
+        this.browseState[browseKey].page = 1;
+        this.navigate(page);
+        // Set filter dropdown after page renders
+        setTimeout(() => {
+            const filterId = type === 'movie' ? 'movie-genre-filter' : 'tv-genre-filter';
+            const filterEl = document.getElementById(filterId);
+            if (filterEl) filterEl.value = String(genreId);
+            if (type === 'movie') this.loadMovies(true);
+            else this.loadTVShows(true);
+        }, 100);
+    },
+
     // ─── Detail Page ───
     async loadDetail(type, id) {
         this.currentType = type;
@@ -664,9 +782,9 @@ const App = {
             : (data.episode_run_time?.[0] ? `${data.episode_run_time[0]} min/ep` : `${data.number_of_seasons} Season${data.number_of_seasons > 1 ? 's' : ''}`);
         document.getElementById('detail-status').textContent = data.status || '';
 
-        // Genres
+        // Genres (clickable - navigate to browse by genre)
         document.getElementById('detail-genres').innerHTML = (data.genres || []).map(g =>
-            `<span class="genre-tag">${g.name}</span>`
+            `<span class="genre-tag clickable" onclick="App.browseByGenre(${g.id}, '${g.name}', '${type}')">${g.name}</span>`
         ).join('');
 
         // Overview
@@ -751,16 +869,18 @@ const App = {
     // ─── Watch Page ───
     async loadWatch(type, tmdbId, season, episode) {
         this.watchState = { tmdbId, type, season: parseInt(season) || 1, episode: parseInt(episode) || 1, detail: null };
-        this._extractionFailed = false; // Reset for new content
-        this._preloadedStreams.clear(); // Clear preloaded cache for new content
-        Player.clearSavedPosition(); // New content = fresh start
+        this._extractionFailed = false;
+        this._preloadedStreams.clear();
+        this._failedSources.clear();
+        Player.clearSavedPosition();
 
         // Show loading overlay immediately
         Player.showLoading('Loading movie info', 'PREPARING YOUR EXPERIENCE');
 
+        let detail;
         try {
             // Load detail info
-            const detail = type === 'movie' ? await API.getMovieDetail(tmdbId) : await API.getTVDetail(tmdbId);
+            detail = type === 'movie' ? await API.getMovieDetail(tmdbId) : await API.getTVDetail(tmdbId);
             this.watchState.detail = detail;
 
             // Set title
@@ -770,15 +890,38 @@ const App = {
             } else {
                 document.getElementById('watch-ep-info').textContent = (detail.release_date || '').split('-')[0];
             }
+        } catch (e) {
+            console.error('Failed to load content details:', e);
+            this.showToast('Failed to load content info. Retrying...', 'error');
+            // Retry once for detail
+            try {
+                API._cache.delete(`/api/${type}/${tmdbId}`);
+                detail = type === 'movie' ? await API.getMovieDetail(tmdbId) : await API.getTVDetail(tmdbId);
+                this.watchState.detail = detail;
+                document.getElementById('watch-title').textContent = detail.title || detail.name;
+            } catch (e2) {
+                console.error('Retry also failed:', e2);
+                this.showToast('Failed to load player — check your connection', 'error');
+                Player.hideLoading();
+                return;
+            }
+        }
 
-            // Load sources
+        // Load sources (separate try-catch so detail failure doesn't block sources)
+        try {
             await this.loadSources();
+        } catch (e) {
+            console.error('Failed to load sources:', e);
+            // Still try to play — changeSource has its own fallback chain
+            this.showToast('Source loading issue — trying alternatives...', 'error');
+        }
 
-            // Load subtitles
-            this.loadSubtitlesForWatch(detail);
+        // Load subtitles (fire and forget)
+        this.loadSubtitlesForWatch(detail);
 
-            // Show episode selector for TV
-            if (type === 'tv' && detail.seasons) {
+        // Show episode selector for TV
+        if (type === 'tv' && detail.seasons) {
+            try {
                 const epSection = document.getElementById('watch-episodes');
                 epSection.classList.remove('hidden');
                 const seasonSelect = document.getElementById('watch-season-select');
@@ -787,24 +930,20 @@ const App = {
                     .map(s => `<option value="${s.season_number}" ${s.season_number == season ? 'selected' : ''}>Season ${s.season_number}</option>`)
                     .join('');
                 this.loadWatchEpisodes(parseInt(season) || 1);
-            } else {
-                document.getElementById('watch-episodes').classList.add('hidden');
-            }
-
-            // Add to history
-            this.addToHistory({
-                id: detail.id,
-                type,
-                title: detail.title || detail.name,
-                poster_path: detail.poster_path,
-                season, episode,
-                timestamp: Date.now()
-            });
-
-        } catch (e) {
-            console.error('Failed to load watch page:', e);
-            this.showToast('Failed to load player', 'error');
+            } catch (e) { console.error('Episode selector error:', e); }
+        } else {
+            document.getElementById('watch-episodes').classList.add('hidden');
         }
+
+        // Add to history
+        this.addToHistory({
+            id: detail.id,
+            type,
+            title: detail.title || detail.name,
+            poster_path: detail.poster_path,
+            season, episode,
+            timestamp: Date.now()
+        });
     },
 
     async loadSources() {
@@ -829,13 +968,17 @@ const App = {
         if (defaultSource) {
             select.value = defaultSource;
         } else {
-            // Auto-select highest quality working embed source (skip API-only providers)
             const bestSource = this.sourcesCache.find(s => !s.apiOnly);
             if (bestSource) select.value = bestSource.id;
         }
 
-        // Load the source
-        this.changeSource(select.value);
+        // Load the source — await it so errors propagate properly
+        try {
+            await this.changeSource(select.value);
+        } catch (e) {
+            console.error('Initial source load failed:', e);
+            // changeSource has its own fallback chain, so this is just a safety net
+        }
 
         // Preload all other sources in background for instant switching
         this.preloadAllSources();
@@ -901,6 +1044,7 @@ const App = {
 
     async changeSource(providerId) {
         const { tmdbId, type, season, episode, detail } = this.watchState;
+        if (!tmdbId) return; // Guard against calls with no content loaded
         const imdbId = detail?.external_ids?.imdb_id || '';
 
         // Save current playback position before switching
@@ -910,7 +1054,6 @@ const App = {
         Player.showLoading('Connecting to premium server', 'INITIALIZING');
 
         // ─── Strategy: ALWAYS try direct extraction first (ad-free, multi-extractor chain on server) ───
-        // The server now tries moviesapi → vidsrc-scraper → vidsrc-icu in sequence
         try {
             // Check preloaded cache first for instant playback
             const preloadedDirect = this._preloadedStreams.get('_direct');
@@ -1369,12 +1512,12 @@ const App = {
             const person = await API.getPerson(personId);
             this.hideLoading();
 
-            // Combine cast credits, sort by popularity
+            // Combine cast credits, sort by popularity — filter out dubious/uncredited entries
             const credits = person.combined_credits?.cast || [];
             const sorted = credits
-                .filter(c => c.poster_path) // Only items with posters
-                .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
-                .slice(0, 30);
+                .filter(c => c.poster_path && (c.vote_count || 0) >= 3 && c.character && c.character.toLowerCase() !== 'self')
+                .sort((a, b) => (b.vote_count || 0) - (a.vote_count || 0))
+                .slice(0, 40);
 
             // Build modal content
             const modal = document.getElementById('person-modal');

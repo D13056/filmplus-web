@@ -165,34 +165,41 @@ const Player = {
         this.stopHLS();
         if (Hls.isSupported()) {
             this.hls = new Hls({
-                // ─── Aggressive Prebuffering Config ───
-                maxBufferLength: 120,          // Buffer up to 120s ahead
+                // ═══ ALIEN ZERO-BUFFER STRATEGY ═══
+                // Phase 1: Start LOWEST quality → instant first frame (< 1s)
+                // Phase 2: Aggressively pre-buffer → build 60s cushion
+                // Phase 3: Upgrade to max quality → seamless HD switch
+                startLevel: 0,                 // START at lowest quality for instant play
+                maxBufferLength: 180,          // Buffer up to 3 minutes ahead
                 maxMaxBufferLength: 600,       // Allow up to 10min buffer
-                maxBufferSize: 200 * 1000 * 1000, // 200MB buffer
-                maxBufferHole: 0.1,            // Minimal hole tolerance for smooth playback
-                backBufferLength: 120,         // Keep 120s behind for rewind
-                startLevel: -1,                // Auto-detect best quality
-                abrEwmaDefaultEstimate: 5000000, // Assume 5Mbps initially
+                maxBufferSize: 300 * 1000 * 1000, // 300MB buffer pool
+                maxBufferHole: 0.05,           // Ultra-tight hole tolerance
+                backBufferLength: 180,         // Keep 3min behind for rewind
+                // Aggressive bandwidth estimation
+                abrEwmaDefaultEstimate: 8000000, // Assume 8Mbps to start high ASAP
+                abrBandWidthUpFactor: 0.5,     // Upgrade quality eagerly (lower = more eager)
+                abrBandWidthFactor: 0.95,      // Downgrade quality reluctantly
+                abrEwmaFastLive: 2.0,          // React fast to bandwidth changes
+                abrEwmaSlowLive: 6.0,
+                abrEwmaFastVoD: 2.0,
+                abrEwmaSlowVoD: 6.0,
+                // Fragment loading - ultra aggressive
+                fragLoadingMaxRetry: 10,
+                fragLoadingRetryDelay: 300,
+                fragLoadingMaxRetryTimeout: 20000,
+                manifestLoadingMaxRetry: 8,
+                levelLoadingMaxRetry: 8,
+                manifestLoadingRetryDelay: 500,
+                levelLoadingRetryDelay: 500,
+                // Pre-fetch & worker acceleration
                 enableWorker: true,
                 lowLatencyMode: false,
                 progressive: true,
                 startPosition: -1,
-                // Faster ABR switching
-                abrEwmaFastLive: 3.0,
-                abrEwmaSlowLive: 9.0,
-                abrEwmaFastVoD: 3.0,
-                abrEwmaSlowVoD: 9.0,
-                abrBandWidthUpFactor: 0.7,
-                abrBandWidthFactor: 0.9,
-                // Faster fragment loading for less buffering
-                fragLoadingMaxRetry: 8,
-                fragLoadingRetryDelay: 500,
-                fragLoadingMaxRetryTimeout: 16000,
-                manifestLoadingMaxRetry: 6,
-                levelLoadingMaxRetry: 6,
-                // Preload next segments aggressively
                 testBandwidth: true,
-                startFragPrefetch: true, // Prefetch next fragment while playing
+                startFragPrefetch: true,       // Prefetch next fragment
+                // Lower watermarks to trigger loading sooner
+                highBufferWatchdogPeriod: 1,   // Check buffer every 1s
             });
 
             this.updateLoading('Preparing your stream', 'CONNECTING TO HD SERVER', 20);
@@ -200,15 +207,36 @@ const Player = {
             this.hls.loadSource(url);
             this.hls.attachMedia(this.video);
 
+            // Track quality upgrade phase
+            let hasUpgraded = false;
+            const upgradeToMax = () => {
+                if (hasUpgraded || !this.hls) return;
+                const levels = this.hls.levels;
+                if (levels && levels.length > 1) {
+                    // Switch to auto (ABR) which will pick highest sustainable quality
+                    this.hls.currentLevel = -1;
+                    this.hls.nextLevel = -1;
+                    hasUpgraded = true;
+                    console.log('[Player] Phase 3: Quality upgrade to auto-max');
+                }
+            };
+
             this.hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
                 this.updateLoading('Stream ready', 'PREPARING HD PLAYBACK', 70);
                 this._populateQualitySelector(data.levels);
                 this.video.play().catch(() => {});
                 this.restorePosition();
+                // Phase 3: After 3 seconds of playback, unlock quality to auto-max
+                setTimeout(upgradeToMax, 3000);
             });
 
             this.hls.on(Hls.Events.FRAG_BUFFERED, () => {
                 this.updateLoading('Almost ready', 'OPTIMIZING QUALITY', 85);
+                // Upgrade quality once we have enough buffer (>10s)
+                if (!hasUpgraded && this.video.buffered.length > 0) {
+                    const buffered = this.video.buffered.end(this.video.buffered.length - 1) - this.video.currentTime;
+                    if (buffered > 10) upgradeToMax();
+                }
             });
 
             // Hide overlay once video starts playing
@@ -233,26 +261,44 @@ const Player = {
                     console.error('HLS Fatal Error:', data);
                     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
                         this.updateLoading('Reconnecting', 'FINDING BEST SERVER', 30);
-                        this.hls.startLoad();
+                        setTimeout(() => { if (this.hls) this.hls.startLoad(); }, 1000);
+                    } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                        console.warn('HLS media error, attempting recovery...');
+                        this.hls.recoverMediaError();
                     } else {
                         this.hideLoading();
                         this.stopHLS();
                     }
                 } else if (data.details === 'bufferStalledError') {
-                    // Non-fatal stall: force load from current position
-                    console.warn('Buffer stalled, forcing recovery...');
-                    if (this.hls) this.hls.startLoad(this.video.currentTime);
+                    // Non-fatal stall: aggressively reload from current position
+                    console.warn('Buffer stalled, forcing aggressive recovery...');
+                    if (this.hls) {
+                        // Temporarily drop quality for faster recovery
+                        const currentLevel = this.hls.currentLevel;
+                        if (currentLevel > 0) {
+                            this.hls.currentLevel = Math.max(0, currentLevel - 1);
+                            setTimeout(() => { if (this.hls) this.hls.currentLevel = -1; }, 5000);
+                        }
+                        this.hls.startLoad(this.video.currentTime);
+                    }
                 }
             });
 
-            // Auto-recover from freeze: if video stalls for 3s while not paused, force reload
+            // Auto-recover from freeze: if video stalls for 2s while not paused, force reload
             this._stallTimer = null;
             this.video.addEventListener('waiting', () => {
                 if (!this.video.paused && this.hls) {
                     this._stallTimer = setTimeout(() => {
-                        console.warn('Stall recovery: forcing fragment reload');
-                        this.hls.startLoad(this.video.currentTime);
-                    }, 3000);
+                        console.warn('Stall recovery: forcing fragment reload + quality drop');
+                        if (this.hls) {
+                            // Drop quality temporarily for faster recovery
+                            const level = this.hls.currentLevel;
+                            if (level > 0) this.hls.currentLevel = Math.max(0, level - 1);
+                            this.hls.startLoad(this.video.currentTime);
+                            // Restore auto quality after recovery
+                            setTimeout(() => { if (this.hls) this.hls.currentLevel = -1; }, 8000);
+                        }
+                    }, 2000);
                 }
             });
             this.video.addEventListener('playing', () => {
