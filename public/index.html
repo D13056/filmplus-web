@@ -354,14 +354,51 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.12/dist/hls.min.js"></script>
-    <script src="/js/api.js?v=5"></script>
-    <script src="/js/player.js?v=7"></script>
-    <script src="/js/app.js?v=8"></script>
+    <script src="/js/api.js?v=7"></script>
+    <script src="/js/player.js?v=8"></script>
+    <script src="/js/app.js?v=10"></script>
+
+    <!-- Anti-popup & anti-redirect protection -->
+    <script>
+        // Block popup windows from ad scripts
+        const _origOpen = window.open;
+        window.open = function(url, target, features) {
+            // Only allow popups we explicitly trigger (trailers etc.)
+            if (url && (url.includes('youtube.com') || url.includes('youtu.be') || url.includes(location.hostname))) {
+                return _origOpen.call(window, url, target, features);
+            }
+            console.log('[AdBlock] Blocked popup:', url);
+            return null;
+        };
+
+        // Block beforeunload hijacks from ad scripts
+        window.addEventListener('beforeunload', function(e) {
+            delete e.returnValue;
+        });
+
+        // Prevent ads from stealing focus
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                // Page lost focus — likely an ad opened something
+                window.focus();
+            }
+        });
+
+        // Block notification permission requests (ad trick)
+        if (Notification && Notification.requestPermission) {
+            Notification.requestPermission = () => Promise.resolve('denied');
+        }
+    </script>
+
     <script>
         // Register ad-blocker service worker
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/sw-adblocker.js', { scope: '/' })
-                .then(reg => console.log('Ad-blocker SW registered'))
+                .then(reg => {
+                    console.log('Ad-blocker SW v3 registered');
+                    // Force update on reload
+                    reg.update();
+                })
                 .catch(err => console.warn('SW registration failed:', err));
         }
     </script>

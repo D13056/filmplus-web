@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════
-   FilmPlus Web - Service Worker Ad Blocker v2
+   FilmPlus Web - Service Worker Ad Blocker v3
    Comprehensive network-level ad blocking for embed players
    ═══════════════════════════════════════════════════════════ */
 
@@ -202,6 +202,61 @@ const AD_HOSTS = new Set([
     'tfrfrfgdsj.com',
     'wfrfrfgdsj.com',
     'xfrfrfgdsj.com',
+
+    // ── Embed player ad domains (discovered from vidsrc, autoembed, etc.) ──
+    'acscdn.com',                    // aclib.js ad clicks library
+    'cloudnestra.com',               // vidsrcme.ru ad wrapper scripts
+    's10.histats.com',               // Histats tracking
+    'sstatic1.histats.com',          // Histats static assets
+    'www.histats.com',               // Histats
+    'unpkg.com',                     // disable-devtool loaded from here
+
+    // Push notification / popup zones (from aclib.js zones)
+    'dfrfrfgdsj.com',
+    'nfrfrfgdsj.com',
+    'lfrfrfgdsj.com',
+    'rfrfrfgdsj.com',
+    'sfrfrfgdsj.com',
+
+    // Ad redirect / popup domains commonly loaded by embed sites
+    'redirect.appmetrica.yandex.com',
+    'mc.adnxs.com',
+    'delivery.adskeeper.com',
+    'adskeeper.com',
+    'www.adskeeper.com',
+    'display.adskeeper.com',
+    'content.adskeeper.co.uk',
+    'syndication.dynsrvtbg.com',
+    'cdn.springserve.com',
+    'vid.springserve.com',
+    'cdn.spotx.tv',
+    'search.spotx.tv',
+    'cdn.spotxchange.com',
+    'search.spotxchange.com',
+
+    // Notification push domains used by embed sites
+    'pushails.com',
+    'cdn.pushails.com',
+    'go.pushails.com',
+    'pushpad.xyz',
+    'cdn.pushpad.xyz',
+    'gravitec.net',
+    'cdn.gravitec.net',
+    'moengage.com',
+    'cdn.moengage.com',
+    'cleverpush.com',
+    'cdn.cleverpush.com',
+
+    // Additional ad networks from VidSrc ecosystem
+    'go.adskeeper.com',
+    'ssp.adskeeper.com',
+    'ad-dsp.com',
+    'yandexadexchange.net',
+    'betweendigital.com',
+    'cdn.betweendigital.com',
+    'prebid.a-mo.net',
+    'adsense-google.com',
+    'adsensecustomsearchads.com',
 ]);
 
 // ── Pattern-based domain matching ──
@@ -245,6 +300,14 @@ const AD_DOMAIN_PATTERNS = [
     /richpush/i,
     /coinhive/i,
     /cryptoloot/i,
+    /acscdn/i,                // aclib.js ad library CDN
+    /histats/i,               // Histats tracking
+    /adskeeper/i,             // AdsKeeper ad network
+    /springserve/i,           // SpringServe video ads
+    /spotx(change)?/i,        // SpotX video ads
+    /pushails/i,              // Push notification ads
+    /dynsrvtbg/i,             // Dynamic ad serving
+    /betweendigital/i,        // Between Digital ads
 ];
 
 // ── URL path patterns that indicate ads ──
@@ -268,6 +331,15 @@ const AD_PATH_PATTERNS = [
     /\/gtm\.js/i,
     /\/tag\.min\.js/i,
     /\/pagead\//i,
+    /\/aclib\.js/i,              // ACScdn ad library (vidsrc embeds)
+    /\/asdf\.js/i,               // Cloudnestra ad script
+    /\/disable-devtool/i,        // Anti-debugging script
+    /\/sbx\.js/i,                // Sandbox detection script
+    /\/histats\.com/i,           // Histats tracking pixel
+    /\/pop\.js/i,                // Generic popup script
+    /\/popunder/i,               // Popunder ad scripts
+    /\/native-ad/i,              // Native ad units
+    /\/outstream/i,              // Outstream video ads
 ];
 
 function isAdRequest(url) {

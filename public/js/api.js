@@ -103,6 +103,11 @@ const API = {
         return this._fetch(url);
     },
 
+    // Get proxied stream URL (for HLS/m3u8 streams)
+    getProxiedStreamUrl(streamUrl) {
+        return `/api/stream-proxy?url=${encodeURIComponent(streamUrl)}`;
+    },
+
     // ─── Subtitles (Multi-source) ───
     async getSubtitles(imdbId, season, episode) {
         let url = `/api/subtitles/${imdbId}`;

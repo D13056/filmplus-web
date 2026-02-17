@@ -827,22 +827,62 @@ const App = {
         const imdbId = detail?.external_ids?.imdb_id || '';
         try {
             const result = await API.getSourceUrl(providerId, tmdbId, type, season, episode, imdbId);
-            if (result.url) {
-                Player.playEmbed(result.url);
-                this._failedSources.clear();
-            } else if (result.apiProvider) {
+
+            if (result.apiProvider) {
                 // API-based providers (morphtv, teatv) - try direct search, fallback if fails
                 const success = await this.tryApiProvider(result.apiProvider, detail, type, season, episode);
                 if (!success) {
                     this._failedSources.add(providerId);
                     this.autoFallbackSource();
                 }
+                return;
+            }
+
+            // Use embed iframe with ad shield protection
+            if (result.url) {
+                Player.playEmbed(result.url);
+                this._failedSources.clear();
+                // Activate ad shield on player area
+                this.activateAdShield();
+            } else {
+                this._failedSources.add(providerId);
+                this.autoFallbackSource();
             }
         } catch (e) {
             console.error('changeSource error:', e);
             this._failedSources.add(providerId);
             this.showToast('Source unavailable, trying next...', 'error');
             this.autoFallbackSource();
+        }
+    },
+
+    // Smart ad shield - absorbs first click (popup trigger), then lets video controls work
+    activateAdShield() {
+        // Remove any existing shield
+        const existing = document.getElementById('ad-shield');
+        if (existing) existing.remove();
+
+        const shield = document.createElement('div');
+        shield.id = 'ad-shield';
+        shield.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;z-index:5;cursor:pointer;background:transparent;';
+        
+        let clickCount = 0;
+        shield.addEventListener('click', (e) => {
+            clickCount++;
+            if (clickCount >= 2) {
+                // After absorbing first click (popup trigger), remove shield
+                shield.remove();
+            }
+            e.stopPropagation();
+        });
+
+        // Auto-remove after 8 seconds regardless (user may have already clicked past ads)
+        setTimeout(() => { if (shield.parentNode) shield.remove(); }, 8000);
+
+        const playerArea = document.getElementById('player-area');
+        if (playerArea) {
+            playerArea.style.position = 'relative';
+            playerArea.appendChild(shield);
         }
     },
 
@@ -854,7 +894,7 @@ const App = {
         const nextSource = this.sourcesCache.find(s => !this._failedSources.has(s.id) && !s.apiOnly);
         if (nextSource) {
             select.value = nextSource.id;
-            this.showToast(`Switched to ${nextSource.name} ${nextSource.quality || ''}`, 'info');
+            this.showToast(`Trying ${nextSource.name} ${nextSource.quality || ''}...`, 'info');
             this.changeSource(nextSource.id);
         } else {
             // All sources tried, reset and just use first embed source

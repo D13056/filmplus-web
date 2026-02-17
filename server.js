@@ -26,6 +26,14 @@ const ADDON_CONFIG_URL = process.env.ADDON_CONFIG_URL;
 
 app.use(cors());
 app.use(express.json());
+
+// ── Security headers to block ads even in child frames ──
+app.use((req, res, next) => {
+    // Permissions-Policy: disable autoplay of ads, prevent popups in iframes
+    res.set('Permissions-Policy', 'autoplay=(self), popups=(self)');
+    next();
+});
+
 // No-cache for JS/CSS to prevent stale browser cache
 app.use('/js', (req, res, next) => {
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -607,16 +615,19 @@ app.get('/api/keys-info', (req, res) => {
 });
 
 // ─── Source Providers Configuration (sorted by quality) ───
+// providers with directStream: true will try server-side stream extraction first
 const SOURCE_PROVIDERS = [
-    { id: 'vidsrc2', name: 'VidSrc 2', quality: '4K', maxRes: 2160, priority: 1 },
-    { id: 'vidsrc', name: 'VidSrc', quality: '1080P', maxRes: 1080, priority: 2 },
-    { id: 'vidsrcme', name: 'VidSrc.me v2', quality: '1080P', maxRes: 1080, priority: 3 },
-    { id: 'autoembed', name: 'AutoEmbed', quality: '1080P', maxRes: 1080, priority: 4 },
+    { id: 'vidsrc2', name: 'VidSrc Pro', quality: '4K', maxRes: 2160, priority: 1 },
+    { id: 'vidsrcicu', name: 'VidSrc ICU', quality: '4K', maxRes: 2160, priority: 2 },
+    { id: 'autoembed', name: 'AutoEmbed', quality: '1080P', maxRes: 1080, priority: 3 },
+    { id: 'autoembedcc', name: 'AutoEmbed CC', quality: '1080P', maxRes: 1080, priority: 4 },
     { id: 'multiembed', name: 'MultiEmbed', quality: '1080P', maxRes: 1080, priority: 5 },
-    { id: 'embed', name: '2Embed', quality: '1080P', maxRes: 1080, priority: 6 },
+    { id: 'vidsrc', name: 'VidSrc', quality: '1080P', maxRes: 1080, priority: 6 },
     { id: 'smashystream', name: 'SmashyStream', quality: '1080P', maxRes: 1080, priority: 7 },
-    { id: 'morphtv', name: 'MorphTV', quality: '720P', maxRes: 720, priority: 8, apiOnly: true },
-    { id: 'teatv', name: 'TeaTV', quality: '720P', maxRes: 720, priority: 9, apiOnly: true },
+    { id: 'embed', name: '2Embed', quality: '1080P', maxRes: 1080, priority: 8 },
+    { id: 'vidsrccc', name: 'VidSrc CC', quality: '1080P', maxRes: 1080, priority: 9 },
+    { id: 'morphtv', name: 'MorphTV', quality: '720P', maxRes: 720, priority: 10, apiOnly: true },
+    { id: 'teatv', name: 'TeaTV', quality: '720P', maxRes: 720, priority: 11, apiOnly: true },
 ];
 
 function getEmbedUrl(providerId, tmdbId, type, season, episode, imdbId) {
@@ -627,9 +638,12 @@ function getEmbedUrl(providerId, tmdbId, type, season, episode, imdbId) {
         case 'vidsrc2':
             if (type === 'tv') return `https://vidsrc.to/embed/tv/${tmdbId}/${season}/${episode}`;
             return `https://vidsrc.to/embed/movie/${tmdbId}`;
-        case 'vidsrcme':
-            if (type === 'tv') return `https://v2.vidsrc.me/embed/tv?tmdb=${tmdbId}&season=${season}&episode=${episode}`;
-            return `https://v2.vidsrc.me/embed/movie?tmdb=${tmdbId}`;
+        case 'vidsrcicu':
+            if (type === 'tv') return `https://vidsrc.icu/embed/tv/${tmdbId}/${season}/${episode}`;
+            return `https://vidsrc.icu/embed/movie/${tmdbId}`;
+        case 'vidsrccc':
+            if (type === 'tv') return `https://vidsrc.cc/v2/embed/tv/${tmdbId}/${season}/${episode}`;
+            return `https://vidsrc.cc/v2/embed/movie/${tmdbId}`;
         case 'embed':
             if (type === 'tv') return `https://www.2embed.cc/embedtv/${tmdbId}&s=${season}&e=${episode}`;
             return `https://www.2embed.cc/embed/${tmdbId}`;
@@ -637,12 +651,15 @@ function getEmbedUrl(providerId, tmdbId, type, season, episode, imdbId) {
             if (type === 'tv') return `https://multiembed.mov/directstream.php?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`;
             return `https://multiembed.mov/directstream.php?video_id=${tmdbId}&tmdb=1`;
         case 'morphtv':
-            return null; // Handled via /api/morphtv/search
+            return null;
         case 'teatv':
-            return null; // Handled via /api/teatv/search
+            return null;
         case 'autoembed':
             if (type === 'tv') return `https://autoembed.co/tv/tmdb/${tmdbId}-${season}-${episode}`;
             return `https://autoembed.co/movie/tmdb/${tmdbId}`;
+        case 'autoembedcc':
+            if (type === 'tv') return `https://player.autoembed.cc/embed/tv/${tmdbId}/${season}/${episode}`;
+            return `https://player.autoembed.cc/embed/movie/${tmdbId}`;
         case 'smashystream':
             if (type === 'tv') return `https://embed.smashystream.com/playere.php?tmdb=${tmdbId}&season=${season}&episode=${episode}`;
             return `https://embed.smashystream.com/playere.php?tmdb=${tmdbId}`;
@@ -651,16 +668,72 @@ function getEmbedUrl(providerId, tmdbId, type, season, episode, imdbId) {
     }
 }
 
+// ─── Server-side Stream Extraction ───
+// Tries to extract direct m3u8/mp4 URLs from embed pages so we can play ad-free
+// ─── HLS/Video Proxy (to bypass CORS for extracted streams) ───
+app.get('/api/stream-proxy', async (req, res) => {
+    try {
+        const { url } = req.query;
+        if (!url) return res.status(400).json({ error: 'URL required' });
+        
+        const parsedUrl = new URL(url);
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Referer': parsedUrl.origin + '/',
+                'Origin': parsedUrl.origin
+            },
+            redirect: 'follow'
+        });
+
+        if (!response.ok) {
+            return res.status(response.status).send('Stream unavailable');
+        }
+
+        const contentType = response.headers.get('content-type') || 'application/octet-stream';
+        res.set('Content-Type', contentType);
+        res.set('Access-Control-Allow-Origin', '*');
+        
+        // For m3u8 playlists, rewrite internal URLs to go through our proxy
+        if (url.includes('.m3u8') || contentType.includes('mpegurl') || contentType.includes('m3u8')) {
+            let playlist = await response.text();
+            // Rewrite relative URLs in the playlist to absolute
+            const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
+            playlist = playlist.replace(/^(?!#)(?!https?:\/\/)(.+\.ts.*)$/gm, (match) => {
+                const absoluteUrl = match.startsWith('/') 
+                    ? `${parsedUrl.origin}${match}` 
+                    : `${baseUrl}${match}`;
+                return `/api/stream-proxy?url=${encodeURIComponent(absoluteUrl)}`;
+            });
+            // Also rewrite m3u8 references (multi-quality playlists)
+            playlist = playlist.replace(/^(?!#)(?!https?:\/\/)(.+\.m3u8.*)$/gm, (match) => {
+                const absoluteUrl = match.startsWith('/') 
+                    ? `${parsedUrl.origin}${match}` 
+                    : `${baseUrl}${match}`;
+                return `/api/stream-proxy?url=${encodeURIComponent(absoluteUrl)}`;
+            });
+            res.send(playlist);
+        } else {
+            // For .ts segments and other binary data, pipe directly
+            const buffer = await response.buffer();
+            res.send(buffer);
+        }
+    } catch (e) {
+        console.error('Stream proxy error:', e.message);
+        res.status(500).send('Proxy error');
+    }
+});
+
 app.get('/api/sources', (req, res) => {
     res.json(SOURCE_PROVIDERS);
 });
 
 app.get('/api/source-url', (req, res) => {
     const { provider, tmdbId, type, season, episode, imdbId } = req.query;
-    const url = getEmbedUrl(provider, tmdbId, type, season, episode, imdbId);
     if (provider === 'morphtv' || provider === 'teatv') {
         return res.json({ url: null, apiProvider: provider, note: `Use /api/${provider}/search endpoint` });
     }
+    const url = getEmbedUrl(provider, tmdbId, type, season, episode, imdbId);
     if (!url) return res.status(404).json({ error: 'Provider not found' });
     res.json({ url });
 });

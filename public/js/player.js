@@ -28,13 +28,21 @@ const Player = {
         this.video.classList.remove('hidden');
         this.clearSubtitleTracks();
 
-        if (url.includes('.m3u8')) {
+        if (url.includes('.m3u8') || url.includes('stream-proxy')) {
             this.playHLS(url);
         } else {
             this.stopHLS();
             this.video.src = url;
             this.video.play().catch(() => {});
         }
+    },
+
+    // Play HLS URL directly (for proxied streams)
+    playHLSUrl(url) {
+        this.iframe.style.display = 'none';
+        this.video.classList.remove('hidden');
+        this.clearSubtitleTracks();
+        this.playHLS(url);
     },
 
     playHLS(url) {
