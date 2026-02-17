@@ -844,17 +844,37 @@ const App = {
     _failedSources: new Set(),
     _preloadedStreams: new Map(), // Cache preloaded stream URLs
 
+    // Show clean UI when direct stream extraction succeeds (no embed ad sources visible)
+    _showDirectStreamUI(sourceName) {
+        const sourceSelector = document.querySelector('.source-selector');
+        if (sourceSelector) {
+            const label = sourceName || 'Premium';
+            const prettyName = {
+                'moviesapi-flixcdn': 'FlixCDN HD',
+                'vidsrc-scraper': 'VidSrc HD',
+                'vidsrc-icu': 'VidSrc ICU',
+            }[label] || label;
+            sourceSelector.innerHTML = `
+                <label><i class="fas fa-check-circle" style="color: var(--accent);"></i> Source:</label>
+                <span class="direct-stream-badge">${prettyName} • Ad-Free</span>
+            `;
+        }
+        // Show quality selector for direct streams
+        const qs = document.querySelector('.quality-selector');
+        if (qs) qs.style.display = '';
+    },
+
     // Preload all stream sources in parallel for instant switching
     async preloadAllSources() {
         const { tmdbId, type, season, episode, detail } = this.watchState;
         if (!tmdbId || !this.sourcesCache) return;
 
-        // Preload direct stream extraction in background
-        if (!this._extractionFailed && !this._preloadedStreams.has('_direct')) {
+        // Preload direct stream extraction in background (multi-extractor on server)
+        if (!this._preloadedStreams.has('_direct')) {
             API.extractStream(tmdbId, type, season, episode).then(stream => {
                 if (stream.success && stream.hlsUrl) {
                     this._preloadedStreams.set('_direct', stream);
-                    console.log('[Preload] Direct stream cached');
+                    console.log('[Preload] Direct stream cached via', stream.source);
                 }
             }).catch(() => {});
         }
@@ -889,51 +909,55 @@ const App = {
         // Show loading overlay
         Player.showLoading('Connecting to premium server', 'INITIALIZING');
 
-        // ─── Strategy: Extract direct stream first (ad-free), fallback to embed ───
-        if (!this._extractionFailed) {
-            try {
-                // Check preloaded cache first for instant playback
-                const preloadedDirect = this._preloadedStreams.get('_direct');
-                if (preloadedDirect && preloadedDirect.success && preloadedDirect.hlsUrl) {
-                    Player.updateLoading('HD stream found', 'STARTING PLAYBACK', 50);
-                    Player.playHLSUrl(preloadedDirect.hlsUrl);
-                    this._failedSources.clear();
-                    if (preloadedDirect.subtitles && preloadedDirect.subtitles.length > 0) {
-                        preloadedDirect.subtitles.forEach((sub, i) => {
-                            const label = (typeof sub === 'object') ? (sub.label || `Sub ${i + 1}`) : `Sub ${i + 1}`;
-                            const url = (typeof sub === 'object') ? sub.url : sub;
-                            const lang = (typeof sub === 'object') ? (sub.lang || 'en') : 'en';
-                            Player.addSubtitleTrack(label, url, lang, i === 0);
-                        });
-                    }
-                    return;
+        // ─── Strategy: ALWAYS try direct extraction first (ad-free, multi-extractor chain on server) ───
+        // The server now tries moviesapi → vidsrc-scraper → vidsrc-icu in sequence
+        try {
+            // Check preloaded cache first for instant playback
+            const preloadedDirect = this._preloadedStreams.get('_direct');
+            if (preloadedDirect && preloadedDirect.success && preloadedDirect.hlsUrl) {
+                Player.updateLoading('HD stream found', 'STARTING PLAYBACK', 50);
+                Player.playHLSUrl(preloadedDirect.hlsUrl);
+                this._failedSources.clear();
+                // Hide source selector — direct extraction is ad-free
+                this._showDirectStreamUI(preloadedDirect.source);
+                if (preloadedDirect.subtitles && preloadedDirect.subtitles.length > 0) {
+                    preloadedDirect.subtitles.forEach((sub, i) => {
+                        const label = (typeof sub === 'object') ? (sub.label || `Sub ${i + 1}`) : `Sub ${i + 1}`;
+                        const url = (typeof sub === 'object') ? sub.url : sub;
+                        const lang = (typeof sub === 'object') ? (sub.lang || 'en') : 'en';
+                        Player.addSubtitleTrack(label, url, lang, i === 0);
+                    });
                 }
-
-                Player.updateLoading('Finding best quality', 'CONNECTING TO HD SERVER', 15);
-                const stream = await API.extractStream(tmdbId, type, season, episode);
-                if (stream.success && stream.hlsUrl) {
-                    Player.updateLoading('HD stream found', 'STARTING PLAYBACK', 50);
-                    Player.playHLSUrl(stream.hlsUrl);
-                    this._failedSources.clear();
-                    
-                    // Add extracted subtitles if any
-                    if (stream.subtitles && stream.subtitles.length > 0) {
-                        stream.subtitles.forEach((sub, i) => {
-                            const label = (typeof sub === 'object') ? (sub.label || `Sub ${i + 1}`) : `Sub ${i + 1}`;
-                            const url = (typeof sub === 'object') ? sub.url : sub;
-                            const lang = (typeof sub === 'object') ? (sub.lang || 'en') : 'en';
-                            Player.addSubtitleTrack(label, url, lang, i === 0);
-                        });
-                    }
-                    return;
-                }
-            } catch (e) {
-                console.warn('Stream extraction failed:', e.message);
+                return;
             }
-            this._extractionFailed = true;
+
+            Player.updateLoading('Finding best quality', 'SCANNING PREMIUM SERVERS', 15);
+            const stream = await API.extractStream(tmdbId, type, season, episode);
+            if (stream.success && stream.hlsUrl) {
+                Player.updateLoading('HD stream found', 'STARTING PLAYBACK', 50);
+                Player.playHLSUrl(stream.hlsUrl);
+                this._failedSources.clear();
+                this._preloadedStreams.set('_direct', stream); // Cache for re-use
+                // Show clean source info instead of embed selector
+                this._showDirectStreamUI(stream.source);
+                
+                // Add extracted subtitles if any
+                if (stream.subtitles && stream.subtitles.length > 0) {
+                    stream.subtitles.forEach((sub, i) => {
+                        const label = (typeof sub === 'object') ? (sub.label || `Sub ${i + 1}`) : `Sub ${i + 1}`;
+                        const url = (typeof sub === 'object') ? sub.url : sub;
+                        const lang = (typeof sub === 'object') ? (sub.lang || 'en') : 'en';
+                        Player.addSubtitleTrack(label, url, lang, i === 0);
+                    });
+                }
+                return;
+            }
+        } catch (e) {
+            console.warn('Stream extraction failed:', e.message);
         }
 
-        // Fallback: use embed iframe
+        // Fallback: use embed iframe (only if ALL server-side extractors failed)
+        console.warn('All direct extractors failed, falling back to embed sources');
         try {
             Player.updateLoading('Loading video source', 'CONNECTING TO SERVER', 40);
 

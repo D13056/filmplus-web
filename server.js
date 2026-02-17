@@ -5,6 +5,15 @@ const cors = require('cors');
 const path = require('path');
 const crypto = require('crypto');
 
+// Dynamic import for ESM vidsrc-scraper module
+let scrapeVidsrc = null;
+import('@definisi/vidsrc-scraper').then(mod => {
+    scrapeVidsrc = mod.scrapeVidsrc;
+    console.log('  ✓ VidSrc scraper loaded');
+}).catch(e => {
+    console.warn('  ✗ VidSrc scraper not available:', e.message);
+});
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const TMDB_KEY = process.env.TMDB_API_KEY;
@@ -760,12 +769,102 @@ async function extractStreamFromMoviesAPI(tmdbId, type, season, episode) {
     return { streamUrl, streamType, subtitles, title: meta.title || videoData.title };
 }
 
+// ─── Server-side Stream Extraction via VidSrc Scraper ───
+async function extractStreamFromVidsrc(tmdbId, type, season, episode) {
+    if (!scrapeVidsrc) throw new Error('VidSrc scraper not loaded');
+    
+    const result = type === 'tv' && season && episode
+        ? await scrapeVidsrc(parseInt(tmdbId), 'tv', parseInt(season), parseInt(episode))
+        : await scrapeVidsrc(parseInt(tmdbId), 'movie');
+    
+    if (!result.success || !result.hlsUrl) throw new Error('VidSrc scraper returned no stream');
+    
+    return {
+        streamUrl: result.hlsUrl,
+        streamType: 'hls',
+        subtitles: (result.subtitles || []).map(s => ({
+            lang: s.lang || 'en',
+            label: s.label || s.lang || 'Sub',
+            url: s.url || s
+        })),
+        title: ''
+    };
+}
+
+// ─── Server-side Stream Extraction via VidSrc.icu page scraping ───
+async function extractStreamFromVidsrcICU(tmdbId, type, season, episode) {
+    let embedUrl;
+    if (type === 'tv' && season && episode) {
+        embedUrl = `https://vidsrc.icu/embed/tv/${tmdbId}/${season}/${episode}`;
+    } else {
+        embedUrl = `https://vidsrc.icu/embed/movie/${tmdbId}`;
+    }
+    
+    const pageRes = await fetch(embedUrl, {
+        headers: { 'User-Agent': STREAM_UA, 'Referer': 'https://vidsrc.icu/' }
+    });
+    if (!pageRes.ok) throw new Error(`vidsrc.icu returned ${pageRes.status}`);
+    const html = await pageRes.text();
+    
+    // Look for m3u8 URL in the page source
+    const m3u8Match = html.match(/(?:file|source|src)\s*[:=]\s*['"]([^'"]*\.m3u8[^'"]*)['"]/i) ||
+                      html.match(/(https?:\/\/[^\s'"]+\.m3u8[^\s'"]*)/i);
+    if (m3u8Match) {
+        return { streamUrl: m3u8Match[1], streamType: 'hls', subtitles: [], title: '' };
+    }
+    
+    // Look for iframe src that might contain the actual player
+    const iframeMatch = html.match(/iframe[^>]+src=["']([^"']+)["']/i);
+    if (iframeMatch) {
+        const innerUrl = iframeMatch[1].startsWith('//') ? 'https:' + iframeMatch[1] : iframeMatch[1];
+        const innerRes = await fetch(innerUrl, {
+            headers: { 'User-Agent': STREAM_UA, 'Referer': embedUrl }
+        });
+        if (innerRes.ok) {
+            const innerHtml = await innerRes.text();
+            const innerM3u8 = innerHtml.match(/(?:file|source|src)\s*[:=]\s*['"]([^'"]*\.m3u8[^'"]*)['"]/i) ||
+                              innerHtml.match(/(https?:\/\/[^\s'"]+\.m3u8[^\s'"]*)/i);
+            if (innerM3u8) {
+                return { streamUrl: innerM3u8[1], streamType: 'hls', subtitles: [], title: '' };
+            }
+        }
+    }
+    
+    throw new Error('No m3u8 found in vidsrc.icu page');
+}
+
+// ─── Multi-Extractor Chain ───
+// Tries multiple extraction methods in order, returns first success
+async function extractStreamMulti(tmdbId, type, season, episode) {
+    const extractors = [
+        { name: 'moviesapi-flixcdn', fn: () => extractStreamFromMoviesAPI(tmdbId, type, season, episode) },
+        { name: 'vidsrc-scraper', fn: () => extractStreamFromVidsrc(tmdbId, type, season, episode) },
+        { name: 'vidsrc-icu', fn: () => extractStreamFromVidsrcICU(tmdbId, type, season, episode) },
+    ];
+    
+    const errors = [];
+    for (const ext of extractors) {
+        try {
+            const result = await ext.fn();
+            if (result && result.streamUrl) {
+                console.log(`[Extract] ${ext.name} succeeded for ${type}/${tmdbId}`);
+                return { ...result, source: ext.name };
+            }
+        } catch (e) {
+            console.log(`[Extract] ${ext.name} failed: ${e.message}`);
+            errors.push(`${ext.name}: ${e.message}`);
+        }
+    }
+    
+    throw new Error(`All extractors failed: ${errors.join('; ')}`);
+}
+
 app.get('/api/extract-stream', async (req, res) => {
     const { tmdbId, type, season, episode } = req.query;
     if (!tmdbId) return res.status(400).json({ error: 'tmdbId required' });
 
     try {
-        const result = await extractStreamFromMoviesAPI(
+        const result = await extractStreamMulti(
             tmdbId,
             type || 'movie',
             season || null,
@@ -776,7 +875,7 @@ app.get('/api/extract-stream', async (req, res) => {
         const proxiedUrl = `/api/stream-proxy?url=${encodeURIComponent(result.streamUrl)}`;
 
         // Proxy subtitle URLs too
-        const proxiedSubs = result.subtitles.map(sub => ({
+        const proxiedSubs = (result.subtitles || []).map(sub => ({
             lang: sub.lang,
             label: sub.label,
             url: `/api/subtitle-file?url=${encodeURIComponent(sub.url)}`
@@ -787,7 +886,7 @@ app.get('/api/extract-stream', async (req, res) => {
             hlsUrl: proxiedUrl,
             directUrl: result.streamUrl,
             subtitles: proxiedSubs,
-            source: 'moviesapi-flixcdn',
+            source: result.source,
         });
     } catch (e) {
         console.error('Extract stream error:', e.message);

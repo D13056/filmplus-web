@@ -742,6 +742,22 @@ select:focus {
     border-color: var(--accent);
 }
 
+/* Direct stream badge (shown when ad-free extraction succeeds) */
+.direct-stream-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    background: linear-gradient(135deg, rgba(var(--accent-rgb, 99, 102, 241), 0.15), rgba(var(--accent-rgb, 99, 102, 241), 0.05));
+    border: 1px solid var(--accent);
+    border-radius: 20px;
+    color: var(--accent);
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    animation: glowPulse 2s ease-in-out infinite;
+}
+
 .load-more {
     text-align: center;
     padding: 24px;
