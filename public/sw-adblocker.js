@@ -1,156 +1,296 @@
 /* ═══════════════════════════════════════════════════════════
-   FilmPlus Web - Service Worker Ad Blocker
-   Blocks known ad/tracking domains at the network level
+   FilmPlus Web - Service Worker Ad Blocker v2
+   Comprehensive network-level ad blocking for embed players
    ═══════════════════════════════════════════════════════════ */
 
-const AD_DOMAIN_PATTERNS = [
+// ── Known ad/tracking hostnames (exact match or suffix match) ──
+const AD_HOSTS = new Set([
+    // Google Ads
+    'pagead2.googlesyndication.com',
+    'tpc.googlesyndication.com',
+    'googleads.g.doubleclick.net',
+    'www.googleadservices.com',
+    'adservice.google.com',
+    'www.google-analytics.com',
+    'ssl.google-analytics.com',
+    'www.googletagmanager.com',
+    'stats.g.doubleclick.net',
+    'ad.doubleclick.net',
+    'static.doubleclick.net',
+    'cm.g.doubleclick.net',
+    'ade.googlesyndication.com',
+    'partner.googleadservices.com',
+    'fundingchoicesmessages.google.com',
+
     // Major ad networks
-    /doubleclick\.net/i,
-    /googlesyndication\.com/i,
-    /googleadservices\.com/i,
-    /google-analytics\.com/i,
-    /googletagmanager\.com/i,
-    /adservice\.google\./i,
-    /pagead2\.googlesyndication/i,
-    /adnxs\.com/i,
-    /adsrvr\.org/i,
-    /adform\.net/i,
-    /advertising\.com/i,
-    /adcolony\.com/i,
-    /admob\./i,
+    'ib.adnxs.com',
+    'secure.adnxs.com',
+    'acdn.adnxs.com',
+    'nym1-ib.adnxs.com',
+    'match.adsrvr.org',
+    'track.adform.net',
+    'ads.yahoo.com',
+    'ad.turn.com',
+    'pixel.advertising.com',
+    'bh.contextweb.com',
+    'ads.pubmatic.com',
+    'gads.pubmatic.com',
+    'hbopenbid.pubmatic.com',
+    'ssp.lkqd.net',
+    'ad-delivery.net',
+    'cdn.snigelweb.com',
+    'loader.snigelweb.com',
 
-    // Pop-under / popup ad networks
-    /popads\.net/i,
-    /popcash\.net/i,
-    /propellerads\.com/i,
-    /propellerpops\.com/i,
-    /popmyads\.com/i,
-    /popunder\.net/i,
-    /juicyads\.com/i,
-    /exoclick\.com/i,
-    /exosrv\.com/i,
-    /hilltopads\.net/i,
-    /richpush\.co/i,
-    /push\.house/i,
-    /pushame\.com/i,
-    /a-ads\.com/i,
-    /adsterra\.com/i,
-    /adsterratools\.com/i,
-    /ad\.plus/i,
-    /monetag\.com/i,
-    /surfe\.pro/i,
-    /onclkds\.com/i,
-    /onclickalgo\.com/i,
-    /clickadu\.com/i,
-    /clickaine\.com/i,
-    /clickosmedia\.com/i,
-    /revcontent\.com/i,
-    /mgid\.com/i,
-    /outbrain\.com/i,
-    /taboola\.com/i,
+    // Pop-under / popup networks
+    'serve.popads.net',
+    'cdn.popcash.net',
+    'www.popcash.net',
+    'go.ad2upapp.com',
+    'cdn.propellerads.com',
+    'ads.propellerads.com',
+    'ad.propellerads.com',
+    'propu.sh',
+    'go.oclasrv.com',
+    'go.mobisla.com',
+    'go.strfrge.com',
+    'go.hpyrdr.com',
+    'notifpushing.com',
+    'cdn.pushape.com',
+    'go.onclasrv.com',
+    'syndication.exoclick.com',
+    'main.exoclick.com',
+    'syndication.exosrv.com',
+    'ads.exosrv.com',
+    'static.exosrv.com',
+    'ads.hilltopads.net',
+    'www.juicyads.com',
+    'a.juicyads.com',
+    'ads.juicyads.com',
+    'richpush.co',
+    'cdn.richpush.co',
+    'push.house',
+    'cdn.push.house',
+    'pushame.com',
+    'cdn.pushame.com',
+    'a-ads.com',
+    'www.a-ads.com',
+    'ad.a-ads.com',
+    'ads.stickyadstv.com',
+    'cdn.stickyadstv.com',
 
-    // Streaming-specific ad domains
-    /whos\.amung\.us/i,
-    /streamads\.net/i,
-    /vidads\.net/i,
-    /ads\.stickyadstv\.com/i,
-    /vastads\.net/i,
-    /ad-maven\.com/i,
-    /admaven\.com/i,
-    /betterads\.co/i,
-    /trafficjunky\.net/i,
-    /trafficstars\.com/i,
-    /s\.magsrv\.com/i,
-    /cdn\.tsyndicate\.com/i,
-    /syndication\.realsrv\.com/i,
-    /ero-advertising\.com/i,
-    /tsyndicate\.com/i,
-    /bannedcontent\.com/i,
-
-    // Tracking/analytics used by embed sites
-    /mc\.yandex\.ru/i,
-    /top\.mail\.ru/i,
-    /counter\.yadro\.ru/i,
-    /hotjar\.com/i,
-    /mixpanel\.com/i,
-    /segment\.io/i,
-    /amplitude\.com/i,
+    // Monetization / ad injection
+    'www.adsterra.com',
+    'ads.adsterra.com',
+    'www2.adsterra.com',
+    'ad.adsterra.com',
+    'hb.adsterratools.com',
+    'www.monetag.com',
+    'a.monetag.com',
+    'd.monetag.com',
+    'a.magsrv.com',
+    's.magsrv.com',
+    'cdn.tsyndicate.com',
+    'loader.tsyndicate.com',
+    'syndication.realsrv.com',
+    'onclkds.com',
+    'www.onclkds.com',
+    'onclickalgo.com',
+    'cdn.onclickalgo.com',
+    'clickadu.com',
+    'www.clickadu.com',
+    'clickaine.com',
+    'cdn.clickaine.com',
+    'clickosmedia.com',
+    'revcontent.com',
+    'labs-cdn.revcontent.com',
+    'trends.revcontent.com',
+    'ads.mgid.com',
+    'jsc.mgid.com',
+    'servicer.mgid.com',
+    'cdn.taboola.com',
+    'api.taboola.com',
+    'trc.taboola.com',
+    'cdn.outbrain.com',
+    'widgets.outbrain.com',
+    'log.outbrain.com',
+    'ad-maven.com',
+    'www.ad-maven.com',
+    'cdn.ad-maven.com',
+    'go.ad-maven.com',
+    'www.admaven.com',
+    'cdn.admaven.com',
+    'ad.admaven.com',
+    'go.admaven.com',
+    'betterads.co',
+    'ad.betterads.co',
+    'trafficjunky.net',
+    'ads.trafficjunky.net',
+    'cdn.trafficjunky.net',
+    'www.trafficstars.com',
+    'ads.trafficstars.com',
+    'tsyndicate.com',
+    'bannedcontent.com',
+    'surfe.pro',
+    'www.surfe.pro',
+    'dolohen.com',
+    'www.dolohen.com',
+    'acint.net',
+    'www.acint.net',
+    'landingtracker.com',
+    'mtracking.net',
 
     // Crypto miners
-    /coinhive\.com/i,
-    /coin-hive\.com/i,
-    /minero\.cc/i,
-    /cryptoloot\.pro/i,
-    /authedmine\.com/i,
+    'coinhive.com',
+    'www.coinhive.com',
+    'coin-hive.com',
+    'minero.cc',
+    'cryptoloot.pro',
+    'authedmine.com',
 
-    // Common embed ad/tracker patterns
-    /\.ads\./i,
-    /\/ads\//i,
-    /\/adserver/i,
-    /\/ad\.js/i,
-    /\/pop\.js/i,
-    /\/popunder/i,
-    /\/popup\.js/i,
-    /banner.*ad/i,
-    /\/prebid/i,
-    /\/vast\//i,
-    /\/vpaid\//i,
-
-    // Malware / scam redirectors
-    /adf\.ly/i,
-    /bit\.ly.*\/ad/i,
-    /shorte\.st/i,
-    /linkvertise\.com/i,
-    /ouo\.io/i,
+    // Tracking / analytics (from embed sites)
+    'mc.yandex.ru',
+    'top.mail.ru',
+    'counter.yadro.ru',
+    'www.hotjar.com',
+    'script.hotjar.com',
+    'static.hotjar.com',
+    'api.mixpanel.com',
+    'cdn.mxpnl.com',
+    'cdn.segment.io',
+    'cdn.segment.com',
+    'api.segment.io',
+    'api.amplitude.com',
+    'cdn.amplitude.com',
+    'whos.amung.us',
+    'widgets.amung.us',
 
     // Notification / push spam
-    /notifpush\.com/i,
-    /pushwoosh\.com/i,
-    /sendpulse\.com/i,
-    /pushengage\.com/i,
-    /izooto\.com/i,
-    /webpushr\.com/i,
-    /subscribers\.com/i,
+    'notifpush.com',
+    'cdn.pushwoosh.com',
+    'cp.pushwoosh.com',
+    'cdn.sendpulse.com',
+    'login.sendpulse.com',
+    'cdn.izooto.com',
+    'lsdk.io',
+    'cdn.subscribers.com',
+    'cdn.pushengage.com',
+    'clientcdn.pushengage.com',
+    'webpushr.com',
+    'cdn.webpushr.com',
 
-    // Embed-site specific ad domains
-    /landingtracker\.com/i,
-    /dolohen\.com/i,
-    /acint\.net/i,
-    /adsco\.re/i,
-    /whos\.amung\.us/i,
-    /mc\.webvisor/i,
-    /mtracking\.net/i,
+    // URL shorteners with ads
+    'adf.ly',
+    'www.adf.ly',
+    'shorte.st',
+    'www.shorte.st',
+    'linkvertise.com',
+    'www.linkvertise.com',
+    'ouo.io',
+    'ouo.press',
+
+    // Common embed-site ad domains
+    'newcrev.com',
+    'yablfrede.com',
+    'kfrfrfgdsj.com',
+    'lpcloudsvr302.com',
+    'lpcloudsvr300.com',
+    'apalsfrede.com',
+    'awefrjker.com',
+    'bfrfrfgdsj.com',
+    'pfrfrfgdsj.com',
+    'qfrfrfgdsj.com',
+    'tfrfrfgdsj.com',
+    'wfrfrfgdsj.com',
+    'xfrfrfgdsj.com',
+]);
+
+// ── Pattern-based domain matching ──
+const AD_DOMAIN_PATTERNS = [
+    /^ad[sx]?\./i,
+    /^ads\d?\./i,
+    /\.ads\./i,
+    /^track(ing)?\./i,
+    /^pixel\./i,
+    /^beacon\./i,
+    /^telemetry\./i,
+    /^metrics\./i,
+    /^analytics\./i,
+    /^stat[sx]?\./i,
+    /^click\./i,
+    /^banner\./i,
+    /^sponsor\./i,
+    /pop(up|under|cash|ads)/i,
+    /adserv(er|ing|ice)/i,
+    /doubleclick/i,
+    /googlesyndication/i,
+    /googleadservices/i,
+    /adnxs\.com/i,
+    /adsrvr\.org/i,
+    /exoclick/i,
+    /exosrv/i,
+    /propellerads/i,
+    /hilltopads/i,
+    /adsterra/i,
+    /monetag/i,
+    /trafficjunky/i,
+    /trafficstars/i,
+    /admaven/i,
+    /ad-maven/i,
+    /tsyndicate/i,
+    /realsrv/i,
+    /magsrv/i,
+    /onclkds/i,
+    /clickadu/i,
+    /pushame/i,
+    /richpush/i,
+    /coinhive/i,
+    /cryptoloot/i,
 ];
 
+// ── URL path patterns that indicate ads ──
 const AD_PATH_PATTERNS = [
-    /\/pop\b/i,
-    /\/ads?\b/i,
-    /\/advert/i,
-    /\/banner/i,
-    /\/sponsor/i,
-    /\/tracker/i,
-    /\/pixel\b/i,
+    /\/pop(up|under|out|exit)?\.(js|html|php)/i,
+    /\/ads?\/(banner|display|show|serve|click|pixel)/i,
+    /\/adserver/i,
+    /\/ad[_-]?manager/i,
+    /\/vast(\/|\?|\.xml)/i,
+    /\/vpaid/i,
+    /\/prebid/i,
+    /\/impression/i,
+    /\/click\.php/i,
+    /\/redirect\?.*camp/i,
     /\/beacon\b/i,
-    /\/analytics/i,
-    /impression/i,
-    /click\.php/i,
-    /\/stat\b/i,
+    /\/pixel\.gif/i,
+    /\/pixel\.png/i,
+    /\/tracking\//i,
+    /\/analytics\.js/i,
+    /\/ga\.js/i,
+    /\/gtm\.js/i,
+    /\/tag\.min\.js/i,
+    /\/pagead\//i,
 ];
 
 function isAdRequest(url) {
     try {
         const parsed = new URL(url);
-        const hostname = parsed.hostname;
-        const fullUrl = parsed.href;
+        const hostname = parsed.hostname.toLowerCase();
 
-        // Check domain patterns
-        for (const pattern of AD_DOMAIN_PATTERNS) {
-            if (pattern.test(hostname) || pattern.test(fullUrl)) return true;
+        // Exact host match
+        if (AD_HOSTS.has(hostname)) return true;
+
+        // Check if it's a subdomain of a known ad host
+        for (const adHost of AD_HOSTS) {
+            if (hostname.endsWith('.' + adHost)) return true;
         }
 
-        // Check path patterns (only for non-same-origin requests)
+        // Pattern-based domain check
+        for (const pattern of AD_DOMAIN_PATTERNS) {
+            if (pattern.test(hostname)) return true;
+        }
+
+        // Path-based check
         for (const pattern of AD_PATH_PATTERNS) {
-            if (pattern.test(parsed.pathname)) return true;
+            if (pattern.test(parsed.pathname + parsed.search)) return true;
         }
 
         return false;
@@ -160,7 +300,7 @@ function isAdRequest(url) {
 }
 
 // Install - take control immediately
-self.addEventListener('install', (event) => {
+self.addEventListener('install', () => {
     self.skipWaiting();
 });
 
@@ -173,33 +313,83 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
     const url = event.request.url;
 
-    // Don't block our own server requests
-    if (url.includes(self.location.origin)) return;
+    // Never block our own server requests
+    if (url.startsWith(self.location.origin)) return;
+
+    // Never block known video/streaming CDNs
+    if (isVideoRequest(url)) return;
 
     // Block known ad requests
     if (isAdRequest(url)) {
-        // Return empty response for blocked requests
-        const contentType = getBlockedContentType(url);
-        event.respondWith(new Response(contentType.body, {
-            status: 200,
-            headers: { 'Content-Type': contentType.type }
-        }));
+        event.respondWith(createBlockedResponse(url));
         return;
     }
 });
 
-function getBlockedContentType(url) {
-    if (url.endsWith('.js') || url.includes('.js?')) {
-        return { type: 'application/javascript', body: '/* blocked */' };
+function isVideoRequest(url) {
+    try {
+        const parsed = new URL(url);
+        const hostname = parsed.hostname.toLowerCase();
+        const path = parsed.pathname.toLowerCase();
+
+        // Video file extensions
+        if (/\.(mp4|m3u8|ts|webm|mkv|avi|mov|mpd|m4s|m4v|flv)(\?|$)/i.test(path)) return true;
+
+        // Known video/streaming CDNs
+        const videoDomains = [
+            'vidsrc', 'vidplay', 'filemoon', 'streamtape', 'doodstream',
+            'mixdrop', 'upstream', 'streamlare', 'uqload', 'mp4upload',
+            'vidoza', 'voe.sx', 'vidcloud', 'rabbitstream', 'megacloud',
+            'dokicloud', 'rapid-cloud', 'cdn.plyr.io', 'hls.', 'stream.',
+            'embed.', 'player.', 'play.', 'cdn.jwplayer.com', 'ssl.p.jwpcdn.com',
+            'content.jwplatform.com', 'cdn.plyr.io', 'cdnjs.cloudflare.com',
+            'vjs.zencdn.net', 'hls.js', 'plyr', 'tmdb', 'image.tmdb.org',
+            'autoembed', 'multiembed', '2embed', 'smashystream',
+        ];
+        for (const d of videoDomains) {
+            if (hostname.includes(d)) return true;
+        }
+
+        // HLS/DASH content types
+        if (path.includes('.m3u8') || path.includes('.mpd') || path.includes('.ts')) return true;
+
+        return false;
+    } catch {
+        return false;
     }
-    if (url.endsWith('.css') || url.includes('.css?')) {
-        return { type: 'text/css', body: '/* blocked */' };
+}
+
+function createBlockedResponse(url) {
+    const path = new URL(url).pathname.toLowerCase();
+
+    if (path.endsWith('.js') || path.includes('.js?')) {
+        return new Response('/* ad blocked */', {
+            status: 200,
+            headers: { 'Content-Type': 'application/javascript' }
+        });
     }
-    if (url.endsWith('.gif') || url.endsWith('.png') || url.endsWith('.jpg') || url.endsWith('.webp')) {
-        return { type: 'image/gif', body: '' };
+    if (path.endsWith('.css') || path.includes('.css?')) {
+        return new Response('/* ad blocked */', {
+            status: 200,
+            headers: { 'Content-Type': 'text/css' }
+        });
     }
-    if (url.endsWith('.html') || url.includes('.html?')) {
-        return { type: 'text/html', body: '' };
+    if (/\.(gif|png|jpg|jpeg|webp|svg|ico)(\?|$)/.test(path)) {
+        // Return 1x1 transparent GIF
+        const gif = new Uint8Array([71,73,70,56,57,97,1,0,1,0,0,0,0,59]);
+        return new Response(gif, {
+            status: 200,
+            headers: { 'Content-Type': 'image/gif' }
+        });
     }
-    return { type: 'text/plain', body: '' };
+    if (path.endsWith('.html') || path.includes('.html?') || path.endsWith('.php')) {
+        return new Response('<!DOCTYPE html><html><body></body></html>', {
+            status: 200,
+            headers: { 'Content-Type': 'text/html' }
+        });
+    }
+    return new Response('', {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain' }
+    });
 }

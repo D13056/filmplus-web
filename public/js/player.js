@@ -8,59 +8,18 @@ const Player = {
     video: null,
     hls: null,
     currentSubs: [],
-    clickShield: null,
-    clickShieldTimer: null,
 
     init() {
         this.iframe = document.getElementById('player-iframe');
         this.video = document.getElementById('player-video');
-        this.setupClickShield();
     },
 
-    // Setup transparent click shield to block ad click-traps
-    setupClickShield() {
-        const playerArea = document.getElementById('player-area');
-        if (!playerArea || this.clickShield) return;
-
-        this.clickShield = document.createElement('div');
-        this.clickShield.id = 'player-click-shield';
-        this.clickShield.innerHTML = '<div class="shield-message">Click to watch</div>';
-        playerArea.appendChild(this.clickShield);
-
-        // First click removes the shield temporarily, second click goes to iframe
-        this.clickShield.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            this.dismissShield();
-        });
-    },
-
-    dismissShield() {
-        if (!this.clickShield) return;
-        this.clickShield.classList.add('dismissed');
-        // Re-enable shield after 2 seconds to catch delayed popup triggers
-        clearTimeout(this.clickShieldTimer);
-        this.clickShieldTimer = setTimeout(() => {
-            if (this.clickShield) {
-                this.clickShield.classList.remove('dismissed');
-            }
-        }, 3000);
-    },
-
-    // Play via embed iframe - route through ad-cleaning proxy
+    // Play via embed iframe (sandbox blocks popups, SW blocks ad networks)
     playEmbed(url) {
         this.stopVideo();
         this.iframe.style.display = 'block';
         this.video.classList.add('hidden');
-        if (this.clickShield) this.clickShield.classList.remove('dismissed');
-
-        if (url) {
-            // Route through our server-side ad-cleaning proxy
-            const proxyUrl = '/api/embed-proxy?url=' + encodeURIComponent(url);
-            this.iframe.src = proxyUrl;
-        } else {
-            this.iframe.src = '';
-        }
+        this.iframe.src = url || '';
     },
 
     // Play direct video URL (mp4, m3u8)
