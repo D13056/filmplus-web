@@ -668,43 +668,127 @@ function getEmbedUrl(providerId, tmdbId, type, season, episode, imdbId) {
     }
 }
 
-// ─── Server-side Stream Extraction via VidSrc Scraper ───
-// Extracts direct m3u8 URLs from VidSrc providers (no ads, no embeds)
-let vidsrcScraper = null;
-async function getVidsrcScraper() {
-    if (!vidsrcScraper) {
-        vidsrcScraper = await import('@definisi/vidsrc-scraper');
+// ─── Server-side Stream Extraction via MoviesAPI + FlixCDN ───
+// Fetches video metadata from moviesapi.to, decrypts FlixCDN response to get direct HLS URLs
+
+const FLIXCDN_KEY = Buffer.from('kiemtienmua911ca', 'utf8');
+const FLIXCDN_IV  = Buffer.from('1234567890oiuytr', 'utf8');
+
+function decryptFlixcdn(hexData) {
+    const encData = Buffer.from(hexData.trim(), 'hex');
+    const decipher = crypto.createDecipheriv('aes-128-cbc', FLIXCDN_KEY, FLIXCDN_IV);
+    let decrypted = decipher.update(encData);
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+    return decrypted.toString('utf8');
+}
+
+const STREAM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+async function extractStreamFromMoviesAPI(tmdbId, type, season, episode) {
+    // Step 1: Get video hash from moviesapi.to
+    let apiUrl;
+    if (type === 'tv' && season && episode) {
+        apiUrl = `https://ww2.moviesapi.to/api/tv/${tmdbId}/${season}/${episode}`;
+    } else {
+        apiUrl = `https://ww2.moviesapi.to/api/movie/${tmdbId}`;
     }
-    return vidsrcScraper;
+
+    const metaRes = await fetch(apiUrl, {
+        headers: { 'User-Agent': STREAM_UA, 'Referer': 'https://ww2.moviesapi.to/' }
+    });
+    if (!metaRes.ok) throw new Error(`moviesapi returned ${metaRes.status}`);
+    const meta = await metaRes.json();
+
+    if (!meta.video_url) throw new Error('No video_url in moviesapi response');
+
+    // Extract video hash from flixcdn URL: https://flixcdn.cyou/#HASH&poster=...
+    const hashMatch = meta.video_url.match(/#([^&]+)/);
+    if (!hashMatch) throw new Error('Could not extract video hash from URL');
+    const videoId = hashMatch[1];
+
+    // Step 2: Fetch encrypted video data from flixcdn
+    const videoRes = await fetch(`https://flixcdn.cyou/api/v1/video?id=${videoId}`, {
+        headers: {
+            'User-Agent': STREAM_UA,
+            'Referer': 'https://flixcdn.cyou/',
+            'Origin': 'https://flixcdn.cyou',
+        }
+    });
+    if (!videoRes.ok) throw new Error(`flixcdn returned ${videoRes.status}`);
+    const encryptedHex = await videoRes.text();
+
+    // Step 3: Decrypt AES-128-CBC
+    const decrypted = decryptFlixcdn(encryptedHex);
+    const videoData = JSON.parse(decrypted);
+
+    // Step 4: Pick the best stream URL
+    // Priority: source (direct IP HLS) > hlsVideoTiktok (TikTok CDN) > cf (Cloudflare CDN)
+    let streamUrl = null;
+    let streamType = 'hls';
+
+    if (videoData.source) {
+        streamUrl = videoData.source;
+    } else if (videoData.hlsVideoTiktok) {
+        // hlsVideoTiktok is relative, needs flixcdn origin
+        streamUrl = videoData.hlsVideoTiktok.startsWith('http')
+            ? videoData.hlsVideoTiktok
+            : `https://flixcdn.cyou${videoData.hlsVideoTiktok}`;
+    } else if (videoData.cf) {
+        streamUrl = videoData.cf;
+    }
+
+    if (!streamUrl) throw new Error('No stream URL in decrypted data');
+
+    // Step 5: Extract subtitles
+    const subtitles = [];
+    if (videoData.subtitle && typeof videoData.subtitle === 'object') {
+        for (const [lang, subPath] of Object.entries(videoData.subtitle)) {
+            const subUrl = subPath.startsWith('http') ? subPath : `https://flixcdn.cyou${subPath}`;
+            subtitles.push({ lang, label: lang.toUpperCase(), url: subUrl });
+        }
+    }
+
+    // Also include OpenSubtitles subs from moviesapi response
+    if (meta.subs && Array.isArray(meta.subs)) {
+        for (const sub of meta.subs) {
+            if (sub.url) {
+                subtitles.push({ lang: sub.lang || 'en', label: sub.label || sub.lang || 'Sub', url: sub.url });
+            }
+        }
+    }
+
+    return { streamUrl, streamType, subtitles, title: meta.title || videoData.title };
 }
 
 app.get('/api/extract-stream', async (req, res) => {
     const { tmdbId, type, season, episode } = req.query;
     if (!tmdbId) return res.status(400).json({ error: 'tmdbId required' });
-    
+
     try {
-        const scraper = await getVidsrcScraper();
-        const result = await scraper.scrapeVidsrc(
-            parseInt(tmdbId),
+        const result = await extractStreamFromMoviesAPI(
+            tmdbId,
             type || 'movie',
-            season ? parseInt(season) : null,
-            episode ? parseInt(episode) : null,
-            { timeout: 25000 }
+            season || null,
+            episode || null
         );
-        
-        if (result.success && result.hlsUrl) {
-            // Return proxied URL so frontend doesn't need CORS
-            const proxiedUrl = `/api/stream-proxy?url=${encodeURIComponent(result.hlsUrl)}`;
-            res.json({
-                success: true,
-                hlsUrl: proxiedUrl,
-                directUrl: result.hlsUrl,
-                subtitles: result.subtitles || [],
-                source: 'vidsrc-extract',
-            });
-        } else {
-            res.json({ success: false, error: 'No stream found' });
-        }
+
+        // Proxy the stream URL through our server to avoid CORS
+        const proxiedUrl = `/api/stream-proxy?url=${encodeURIComponent(result.streamUrl)}`;
+
+        // Proxy subtitle URLs too
+        const proxiedSubs = result.subtitles.map(sub => ({
+            lang: sub.lang,
+            label: sub.label,
+            url: `/api/subtitle-file?url=${encodeURIComponent(sub.url)}`
+        }));
+
+        res.json({
+            success: true,
+            hlsUrl: proxiedUrl,
+            directUrl: result.streamUrl,
+            subtitles: proxiedSubs,
+            source: 'moviesapi-flixcdn',
+        });
     } catch (e) {
         console.error('Extract stream error:', e.message);
         res.json({ success: false, error: e.message });
@@ -718,11 +802,23 @@ app.get('/api/stream-proxy', async (req, res) => {
         if (!url) return res.status(400).json({ error: 'URL required' });
         
         const parsedUrl = new URL(url);
+
+        // Determine correct Referer — flixcdn streams (direct IP CDN) require flixcdn.cyou referer
+        let referer = parsedUrl.origin + '/';
+        let origin = parsedUrl.origin;
+        const isFlixcdnStream = /^\d+\.\d+\.\d+\.\d+$/.test(parsedUrl.hostname) || 
+                                parsedUrl.hostname.includes('flixcdn') ||
+                                parsedUrl.hostname.includes('tiktokcdn');
+        if (isFlixcdnStream) {
+            referer = 'https://flixcdn.cyou/';
+            origin = 'https://flixcdn.cyou';
+        }
+
         const response = await fetch(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Referer': parsedUrl.origin + '/',
-                'Origin': parsedUrl.origin
+                'Referer': referer,
+                'Origin': origin
             },
             redirect: 'follow'
         });
@@ -735,24 +831,38 @@ app.get('/api/stream-proxy', async (req, res) => {
         res.set('Content-Type', contentType);
         res.set('Access-Control-Allow-Origin', '*');
         
-        // For m3u8 playlists, rewrite internal URLs to go through our proxy
-        if (url.includes('.m3u8') || contentType.includes('mpegurl') || contentType.includes('m3u8')) {
+        // For m3u8 playlists, rewrite ALL URLs to go through our proxy
+        if (url.includes('.m3u8') || url.includes('cf-master') || contentType.includes('mpegurl') || contentType.includes('m3u8')) {
             let playlist = await response.text();
-            // Rewrite relative URLs in the playlist to absolute
             const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
-            playlist = playlist.replace(/^(?!#)(?!https?:\/\/)(.+\.ts.*)$/gm, (match) => {
-                const absoluteUrl = match.startsWith('/') 
-                    ? `${parsedUrl.origin}${match}` 
-                    : `${baseUrl}${match}`;
+
+            function resolveUrl(rawUrl) {
+                if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) return rawUrl;
+                if (rawUrl.startsWith('/')) return `${parsedUrl.origin}${rawUrl}`;
+                return `${baseUrl}${rawUrl}`;
+            }
+            
+            // Rewrite every non-comment, non-empty line (segments can be .ts, .html, or anything)
+            // Also rewrite URI= attributes in #EXT-X-MAP and #EXT-X-KEY tags
+            playlist = playlist.split('\n').map(line => {
+                const trimmed = line.trim();
+                if (!trimmed) return line;
+
+                // Rewrite URI= in EXT tags (e.g. EXT-X-MAP, EXT-X-KEY)
+                if (trimmed.startsWith('#') && trimmed.includes('URI=')) {
+                    return line.replace(/URI="([^"]+)"/g, (match, uri) => {
+                        const abs = resolveUrl(uri);
+                        return `URI="${'/api/stream-proxy?url=' + encodeURIComponent(abs)}"`;
+                    });
+                }
+
+                if (trimmed.startsWith('#')) return line;
+                
+                const absoluteUrl = resolveUrl(trimmed);
                 return `/api/stream-proxy?url=${encodeURIComponent(absoluteUrl)}`;
-            });
-            // Also rewrite m3u8 references (multi-quality playlists)
-            playlist = playlist.replace(/^(?!#)(?!https?:\/\/)(.+\.m3u8.*)$/gm, (match) => {
-                const absoluteUrl = match.startsWith('/') 
-                    ? `${parsedUrl.origin}${match}` 
-                    : `${baseUrl}${match}`;
-                return `/api/stream-proxy?url=${encodeURIComponent(absoluteUrl)}`;
-            });
+            }).join('\n');
+            
+            res.set('Content-Type', 'application/vnd.apple.mpegurl');
             res.send(playlist);
         } else {
             // For .ts segments and other binary data, pipe directly

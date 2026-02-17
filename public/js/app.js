@@ -841,7 +841,10 @@ const App = {
                     // Add extracted subtitles if any
                     if (stream.subtitles && stream.subtitles.length > 0) {
                         stream.subtitles.forEach((sub, i) => {
-                            Player.addSubtitleTrack(`Sub ${i + 1}`, sub, 'en', i === 0);
+                            const label = (typeof sub === 'object') ? (sub.label || `Sub ${i + 1}`) : `Sub ${i + 1}`;
+                            const url = (typeof sub === 'object') ? sub.url : sub;
+                            const lang = (typeof sub === 'object') ? (sub.lang || 'en') : 'en';
+                            Player.addSubtitleTrack(label, url, lang, i === 0);
                         });
                     }
                     return;
