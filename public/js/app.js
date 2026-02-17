@@ -739,6 +739,7 @@ const App = {
     // ─── Watch Page ───
     async loadWatch(type, tmdbId, season, episode) {
         this.watchState = { tmdbId, type, season: parseInt(season) || 1, episode: parseInt(episode) || 1, detail: null };
+        this._extractionFailed = false; // Reset for new content
 
         try {
             // Load detail info
@@ -825,11 +826,38 @@ const App = {
     async changeSource(providerId) {
         const { tmdbId, type, season, episode, detail } = this.watchState;
         const imdbId = detail?.external_ids?.imdb_id || '';
+
+        // ─── Strategy: Extract direct stream first (ad-free), fallback to embed ───
+        // Try direct HLS extraction (no ads, plays in our own player)
+        if (!this._extractionFailed) {
+            try {
+                this.showToast('Extracting stream...', 'info');
+                const stream = await API.extractStream(tmdbId, type, season, episode);
+                if (stream.success && stream.hlsUrl) {
+                    Player.playHLSUrl(stream.hlsUrl);
+                    this._failedSources.clear();
+                    this.showToast('Playing ad-free stream', 'success');
+                    
+                    // Add extracted subtitles if any
+                    if (stream.subtitles && stream.subtitles.length > 0) {
+                        stream.subtitles.forEach((sub, i) => {
+                            Player.addSubtitleTrack(`Sub ${i + 1}`, sub, 'en', i === 0);
+                        });
+                    }
+                    return;
+                }
+            } catch (e) {
+                console.warn('Stream extraction failed:', e.message);
+            }
+            // Mark extraction as failed so we don't retry on every source change
+            this._extractionFailed = true;
+        }
+
+        // Fallback: use embed iframe
         try {
             const result = await API.getSourceUrl(providerId, tmdbId, type, season, episode, imdbId);
 
             if (result.apiProvider) {
-                // API-based providers (morphtv, teatv) - try direct search, fallback if fails
                 const success = await this.tryApiProvider(result.apiProvider, detail, type, season, episode);
                 if (!success) {
                     this._failedSources.add(providerId);
@@ -838,11 +866,9 @@ const App = {
                 return;
             }
 
-            // Use embed iframe with ad shield protection
             if (result.url) {
                 Player.playEmbed(result.url);
                 this._failedSources.clear();
-                // Activate ad shield on player area
                 this.activateAdShield();
             } else {
                 this._failedSources.add(providerId);

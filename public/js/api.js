@@ -108,6 +108,14 @@ const API = {
         return `/api/stream-proxy?url=${encodeURIComponent(streamUrl)}`;
     },
 
+    // ─── Direct Stream Extraction (ad-free m3u8) ───
+    async extractStream(tmdbId, type, season, episode) {
+        let url = `/api/extract-stream?tmdbId=${tmdbId}&type=${type || 'movie'}`;
+        if (season) url += `&season=${season}`;
+        if (episode) url += `&episode=${episode}`;
+        return this._fetch(url);
+    },
+
     // ─── Subtitles (Multi-source) ───
     async getSubtitles(imdbId, season, episode) {
         let url = `/api/subtitles/${imdbId}`;

@@ -668,8 +668,49 @@ function getEmbedUrl(providerId, tmdbId, type, season, episode, imdbId) {
     }
 }
 
-// ─── Server-side Stream Extraction ───
-// Tries to extract direct m3u8/mp4 URLs from embed pages so we can play ad-free
+// ─── Server-side Stream Extraction via VidSrc Scraper ───
+// Extracts direct m3u8 URLs from VidSrc providers (no ads, no embeds)
+let vidsrcScraper = null;
+async function getVidsrcScraper() {
+    if (!vidsrcScraper) {
+        vidsrcScraper = await import('@definisi/vidsrc-scraper');
+    }
+    return vidsrcScraper;
+}
+
+app.get('/api/extract-stream', async (req, res) => {
+    const { tmdbId, type, season, episode } = req.query;
+    if (!tmdbId) return res.status(400).json({ error: 'tmdbId required' });
+    
+    try {
+        const scraper = await getVidsrcScraper();
+        const result = await scraper.scrapeVidsrc(
+            parseInt(tmdbId),
+            type || 'movie',
+            season ? parseInt(season) : null,
+            episode ? parseInt(episode) : null,
+            { timeout: 25000 }
+        );
+        
+        if (result.success && result.hlsUrl) {
+            // Return proxied URL so frontend doesn't need CORS
+            const proxiedUrl = `/api/stream-proxy?url=${encodeURIComponent(result.hlsUrl)}`;
+            res.json({
+                success: true,
+                hlsUrl: proxiedUrl,
+                directUrl: result.hlsUrl,
+                subtitles: result.subtitles || [],
+                source: 'vidsrc-extract',
+            });
+        } else {
+            res.json({ success: false, error: 'No stream found' });
+        }
+    } catch (e) {
+        console.error('Extract stream error:', e.message);
+        res.json({ success: false, error: e.message });
+    }
+});
+
 // ─── HLS/Video Proxy (to bypass CORS for extracted streams) ───
 app.get('/api/stream-proxy', async (req, res) => {
     try {
