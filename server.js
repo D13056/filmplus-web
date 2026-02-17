@@ -267,6 +267,229 @@ app.get('/api/proxy', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ─── Ad-cleaning embed proxy ───
+// Fetches embed page HTML, strips ad scripts/iframes/popups, serves clean version
+app.get('/api/embed-proxy', async (req, res) => {
+    try {
+        const { url } = req.query;
+        if (!url) return res.status(400).json({ error: 'URL required' });
+
+        const parsedUrl = new URL(url);
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': parsedUrl.origin,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            },
+            redirect: 'follow',
+        });
+
+        if (!response.ok) {
+            return res.status(response.status).json({ error: `Upstream returned ${response.status}` });
+        }
+
+        let html = await response.text();
+
+        // ── Strip ad-related scripts ──
+        // Remove script tags that load from known ad domains
+        const adDomains = [
+            'popads', 'popcash', 'propellerads', 'juicyads', 'exoclick', 'exosrv',
+            'hilltopads', 'adsterra', 'monetag', 'clickadu', 'trafficjunky',
+            'trafficstars', 'admaven', 'ad-maven', 'revcontent', 'mgid', 'outbrain',
+            'taboola', 'googlesyndication', 'googleadservices', 'doubleclick',
+            'adnxs', 'adsrvr', 'dolohen', 'onclkds', 'surfe\\.pro', 'acint\\.net',
+            'pushame', 'richpush', 'push\\.house', 'tsyndicate', 'magsrv',
+            'syndication\\.realsrv', 'bannedcontent', 'landingtracker',
+            'coinhive', 'coin-hive', 'minero', 'cryptoloot', 'authedmine',
+            'notifpush', 'pushwoosh', 'sendpulse', 'izooto', 'webpushr',
+            'hotjar', 'mc\\.yandex', 'top\\.mail\\.ru', 'whos\\.amung',
+            'disqus', 'facebook\\.net.*sdk', 'connect\\.facebook',
+            'adf\\.ly', 'shorte\\.st', 'linkvertise', 'ouo\\.io'
+        ];
+        const adDomainPattern = adDomains.join('|');
+
+        // Remove scripts that reference ad domains
+        html = html.replace(/<script[^>]*src\s*=\s*["'][^"']*(?:${adDomainPattern})[^"']*["'][^>]*>[\s\S]*?<\/script>/gi, '<!-- ad script removed -->');
+        html = html.replace(new RegExp(`<script[^>]*src\\s*=\\s*["'][^"']*(?:${adDomainPattern})[^"']*["'][^>]*>([\\s\\S]*?)<\\/script>`, 'gi'), '<!-- ad script removed -->');
+        html = html.replace(new RegExp(`<script[^>]*src\\s*=\\s*["'][^"']*(?:${adDomainPattern})[^"']*["'][^>]*\\/?>`, 'gi'), '<!-- ad script removed -->');
+
+        // Remove inline scripts with ad-related patterns
+        const adScriptPatterns = [
+            /window\.open\s*\(/gi,
+            /window\.location\s*[=]/gi,
+            /document\.location\s*[=]/gi,
+            /popunder/gi,
+            /pop_under/gi,
+            /popUnder/gi,
+            /pop_new/gi,
+            /pop_cb/gi,
+            /interstitial/gi,
+            /clickunder/gi,
+        ];
+        html = html.replace(/<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/gi, (match, content) => {
+            // Check if this inline script contains ad patterns
+            for (const pattern of adScriptPatterns) {
+                if (pattern.test(content)) {
+                    pattern.lastIndex = 0;
+                    return '<!-- ad inline script removed -->';
+                }
+            }
+            // Check for window.open, pop-ups, redirectors
+            if (/\bopen\s*\(\s*['"][^'"]*['"].*['"]_blank['"]/i.test(content)) {
+                return '<!-- popup script removed -->';
+            }
+            return match;
+        });
+
+        // Remove ad iframes (small/hidden iframes commonly used for ads)
+        html = html.replace(/<iframe[^>]*(?:width\s*=\s*["']?[01]["']?|height\s*=\s*["']?[01]["']?|display\s*:\s*none|visibility\s*:\s*hidden)[^>]*>[\s\S]*?<\/iframe>/gi, '<!-- ad iframe removed -->');
+        html = html.replace(new RegExp(`<iframe[^>]*src\\s*=\\s*["'][^"']*(?:${adDomainPattern})[^"']*["'][^>]*>[\\s\\S]*?<\\/iframe>`, 'gi'), '<!-- ad iframe removed -->');
+
+        // Remove ad-related div containers
+        html = html.replace(/<div[^>]*(?:class|id)\s*=\s*["'][^"']*(?:ad-container|ad-wrapper|ad-overlay|popup-overlay|modal-ad|interstitial|preroll)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi, '<!-- ad div removed -->');
+
+        // Remove noscript ad tags
+        html = html.replace(/<noscript[^>]*>[\s\S]*?(?:ad|track|pixel|analytics)[\s\S]*?<\/noscript>/gi, '<!-- ad noscript removed -->');
+
+        // ── Inject ad-blocking CSS & JS at the end of <head> ──
+        const adBlockCSS = `
+<style id="filmplus-adblock">
+    /* Hide common ad containers */
+    [class*="ad-"], [class*="ads-"], [class*="advert"],
+    [id*="ad-"], [id*="ads-"], [id*="advert"],
+    [class*="popup"], [class*="modal-ad"], [class*="overlay-ad"],
+    [class*="banner-ad"], [class*="interstitial"],
+    [class*="preroll"], [class*="sponsor"],
+    iframe[src*="ad"], iframe[src*="pop"],
+    .ad, .ads, .adsbygoogle, #ad, #ads,
+    div[data-ad], div[data-ads],
+    a[target="_blank"][rel*="nofollow"][href*="://"] {
+        display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+        width: 0 !important;
+        overflow: hidden !important;
+        pointer-events: none !important;
+    }
+    /* Prevent fixed/absolute positioned ad overlays */
+    body > div[style*="z-index"]:not([class*="player"]):not([id*="player"]):not([class*="video"]):not([id*="video"]) {
+        pointer-events: none !important;
+    }
+    /* Allow the actual video player to work */
+    video, .jw-wrapper, .plyr, .vjs-tech, #player, .video-js,
+    [class*="player"], [id*="player"] {
+        pointer-events: auto !important;
+    }
+</style>`;
+
+        const adBlockJS = `
+<script id="filmplus-adblock-js">
+(function() {
+    'use strict';
+    // Override window.open to prevent popups
+    const origOpen = window.open;
+    window.open = function() { return null; };
+
+    // Block common popup/redirect techniques
+    Object.defineProperty(document, 'onclick', { set: function() {}, get: function() { return null; } });
+
+    // Prevent click hijacking at the document level
+    document.addEventListener('click', function(e) {
+        const target = e.target;
+        // Allow clicks on video elements and player controls
+        if (target.closest('video, .jw-wrapper, .plyr, .video-js, [class*="player"], [id*="player"], button, .vjs-control, .jw-icon, .plyr__control')) {
+            return;
+        }
+        // Block clicks on suspicious links/overlays
+        if (target.tagName === 'A' && target.target === '_blank') {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
+
+    // Remove elements created dynamically that match ad patterns
+    const observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+            mutation.addedNodes.forEach(function(node) {
+                if (node.nodeType !== 1) return;
+                // Remove ad iframes
+                if (node.tagName === 'IFRAME') {
+                    const src = (node.src || '').toLowerCase();
+                    if (src.includes('ad') || src.includes('pop') || src.includes('banner') ||
+                        src.includes('track') || !src.includes(location.hostname)) {
+                        // Only remove if it's not the main player iframe
+                        if (!node.closest('[class*="player"], [id*="player"]') &&
+                            node.width < 10 || node.height < 10 ||
+                            getComputedStyle(node).display === 'none') {
+                            node.remove();
+                        }
+                    }
+                }
+                // Remove popup overlays
+                if (node.tagName === 'DIV') {
+                    const style = getComputedStyle(node);
+                    const zIndex = parseInt(style.zIndex) || 0;
+                    if (zIndex > 9000 && style.position === 'fixed' &&
+                        !node.closest('[class*="player"], [id*="player"]')) {
+                        node.remove();
+                    }
+                }
+                // Remove ad scripts added dynamically
+                if (node.tagName === 'SCRIPT' && node.src) {
+                    const adKeywords = ['pop', 'ads', 'advert', 'banner', 'track', 'analytics', 'syndication', 'monetag', 'propeller'];
+                    if (adKeywords.some(k => node.src.toLowerCase().includes(k))) {
+                        node.remove();
+                    }
+                }
+            });
+        });
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+
+    // Intercept and block event listeners on body/document that trigger popups
+    const origAddEventListener = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function(type, listener, options) {
+        if ((type === 'click' || type === 'mousedown' || type === 'mouseup' || type === 'pointerdown') &&
+            (this === document || this === document.body || this === window)) {
+            const listenerStr = listener.toString();
+            if (listenerStr.includes('open(') || listenerStr.includes('window.location') ||
+                listenerStr.includes('document.location') || listenerStr.includes('_blank')) {
+                return; // Don't register this ad click handler
+            }
+        }
+        return origAddEventListener.call(this, type, listener, options);
+    };
+})();
+</script>`;
+
+        // Inject into <head>
+        if (html.includes('</head>')) {
+            html = html.replace('</head>', adBlockCSS + adBlockJS + '</head>');
+        } else {
+            html = adBlockCSS + adBlockJS + html;
+        }
+
+        // Set base URL so relative resources load from the original domain
+        if (!html.includes('<base')) {
+            const baseTag = `<base href="${parsedUrl.origin}/">`;
+            if (html.includes('<head>')) {
+                html = html.replace('<head>', '<head>' + baseTag);
+            } else if (html.includes('<HEAD>')) {
+                html = html.replace('<HEAD>', '<HEAD>' + baseTag);
+            } else {
+                html = baseTag + html;
+            }
+        }
+
+        res.set('Content-Type', 'text/html; charset=utf-8');
+        res.set('X-Frame-Options', 'ALLOWALL');
+        res.send(html);
+    } catch (e) {
+        console.error('Embed proxy error:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ─── MorphTV / TeaTV Scraper API ───
 app.get('/api/morphtv/search', async (req, res) => {
     try {

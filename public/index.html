@@ -229,7 +229,12 @@
                 <div class="watch-container">
                     <div class="player-wrapper">
                         <div id="player-area" class="player-area">
-                            <iframe id="player-iframe" allowfullscreen allow="autoplay; encrypted-media; picture-in-picture" frameborder="0"></iframe>
+                            <iframe id="player-iframe" 
+                                sandbox="allow-scripts allow-same-origin allow-forms allow-presentation" 
+                                allowfullscreen 
+                                allow="autoplay; encrypted-media; picture-in-picture" 
+                                frameborder="0"
+                                referrerpolicy="no-referrer"></iframe>
                             <video id="player-video" controls crossorigin="anonymous" class="hidden"></video>
                         </div>
                     </div>
@@ -352,7 +357,15 @@
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.12/dist/hls.min.js"></script>
     <script src="/js/api.js?v=5"></script>
-    <script src="/js/player.js?v=5"></script>
-    <script src="/js/app.js?v=7"></script>
+    <script src="/js/player.js?v=6"></script>
+    <script src="/js/app.js?v=8"></script>
+    <script>
+        // Register ad-blocker service worker
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw-adblocker.js', { scope: '/' })
+                .then(reg => console.log('Ad-blocker SW registered'))
+                .catch(err => console.warn('SW registration failed:', err));
+        }
+    </script>
 </body>
 </html>
