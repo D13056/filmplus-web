@@ -820,6 +820,232 @@ select:focus {
 }
 .player-area video.hidden { display: none; }
 
+/* ─── Player Loading Overlay ─── */
+.player-loading-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at center, rgba(10,10,15,0.95) 0%, rgba(0,0,0,0.98) 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    opacity: 1;
+    transition: opacity 0.5s ease;
+}
+.player-loading-overlay.fade-out {
+    opacity: 0;
+    pointer-events: none;
+}
+.player-loading-overlay.hidden {
+    display: none;
+}
+.loading-content {
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+}
+.loading-rings {
+    position: relative;
+    width: 100px;
+    height: 100px;
+}
+.ring {
+    position: absolute;
+    border-radius: 50%;
+    border: 2px solid transparent;
+}
+.ring-1 {
+    top: 0; left: 0; right: 0; bottom: 0;
+    border-top-color: var(--accent);
+    border-right-color: var(--accent);
+    animation: spin 1.2s linear infinite;
+}
+.ring-2 {
+    top: 10px; left: 10px; right: 10px; bottom: 10px;
+    border-bottom-color: #ff6b35;
+    border-left-color: #ff6b35;
+    animation: spin-reverse 1s linear infinite;
+}
+.ring-3 {
+    top: 20px; left: 20px; right: 20px; bottom: 20px;
+    border-top-color: #ffd700;
+    animation: spin 0.8s linear infinite;
+}
+.loading-icon {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 1.5rem;
+    color: var(--accent);
+    animation: pulse-glow 2s ease-in-out infinite;
+}
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+@keyframes spin-reverse {
+    0% { transform: rotate(360deg); }
+    100% { transform: rotate(0deg); }
+}
+@keyframes pulse-glow {
+    0%, 100% { opacity: 0.6; transform: translate(-50%, -50%) scale(1); }
+    50% { opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
+}
+.loading-text {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+.loading-dots span {
+    animation: dot-blink 1.4s infinite both;
+    font-size: 1.2rem;
+}
+.loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+.loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes dot-blink {
+    0%, 80%, 100% { opacity: 0; }
+    40% { opacity: 1; }
+}
+.loading-progress {
+    width: 180px;
+    height: 3px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 2px;
+    overflow: hidden;
+}
+.loading-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), #ff6b35, #ffd700);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+.loading-stage {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+/* ─── Quality Selector ─── */
+.quality-selector {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.88rem;
+}
+.quality-selector label {
+    color: var(--text-secondary);
+    font-weight: 500;
+    white-space: nowrap;
+}
+.quality-selector select {
+    padding: 8px 16px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    outline: none;
+    cursor: pointer;
+}
+.quality-selector select:focus { border-color: var(--accent); }
+
+/* ─── Subtitle Settings Button ─── */
+.ctrl-btn {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm, 6px);
+    padding: 6px 10px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: all 0.2s;
+}
+.ctrl-btn:hover {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+.ctrl-btn-sm {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: var(--radius-sm, 6px);
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 0.7rem;
+    transition: all 0.2s;
+}
+.ctrl-btn-sm:hover {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+/* ─── Subtitle Controls Panel ─── */
+.subtitle-controls {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+    padding: 16px 20px;
+    margin-top: -1px;
+}
+.subtitle-controls.hidden { display: none; }
+.sub-ctrl-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 14px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+.sub-ctrl-header i { color: var(--accent); margin-right: 6px; }
+.sub-ctrl-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-top: 1px solid rgba(255,255,255,0.05);
+}
+.sub-ctrl-row label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+.sub-sync-controls,
+.sub-size-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+#sub-sync-value,
+#sub-size-value {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent);
+    min-width: 48px;
+    text-align: center;
+}
+.subtitle-controls select {
+    padding: 6px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    cursor: pointer;
+    outline: none;
+}
+.subtitle-controls select:focus { border-color: var(--accent); }
+
 .player-controls-bar {
     display: flex;
     align-items: center;
@@ -1127,6 +1353,9 @@ select:focus {
 
     .player-controls-bar { flex-direction: column; align-items: stretch; }
     .player-info { text-align: left; margin-left: 0; }
+    .quality-selector { width: 100%; }
+    .subtitle-controls { padding: 12px 16px; }
+    .sub-ctrl-row { flex-direction: column; gap: 8px; align-items: flex-start; }
 }
 
 @media (max-width: 480px) {

@@ -740,6 +740,10 @@ const App = {
     async loadWatch(type, tmdbId, season, episode) {
         this.watchState = { tmdbId, type, season: parseInt(season) || 1, episode: parseInt(episode) || 1, detail: null };
         this._extractionFailed = false; // Reset for new content
+        Player.clearSavedPosition(); // New content = fresh start
+
+        // Show loading overlay immediately
+        Player.showLoading('Loading movie info', 'FETCHING DETAILS');
 
         try {
             // Load detail info
@@ -827,16 +831,21 @@ const App = {
         const { tmdbId, type, season, episode, detail } = this.watchState;
         const imdbId = detail?.external_ids?.imdb_id || '';
 
+        // Save current playback position before switching
+        Player.savePosition();
+
+        // Show loading overlay
+        Player.showLoading('Connecting to HD server', 'INITIALIZING');
+
         // ─── Strategy: Extract direct stream first (ad-free), fallback to embed ───
-        // Try direct HLS extraction (no ads, plays in our own player)
         if (!this._extractionFailed) {
             try {
-                this.showToast('Extracting stream...', 'info');
+                Player.updateLoading('Extracting HD stream', 'CONTACTING SERVER', 15);
                 const stream = await API.extractStream(tmdbId, type, season, episode);
                 if (stream.success && stream.hlsUrl) {
+                    Player.updateLoading('Stream found', 'LOADING PLAYER', 50);
                     Player.playHLSUrl(stream.hlsUrl);
                     this._failedSources.clear();
-                    this.showToast('Playing ad-free stream', 'success');
                     
                     // Add extracted subtitles if any
                     if (stream.subtitles && stream.subtitles.length > 0) {
@@ -852,17 +861,18 @@ const App = {
             } catch (e) {
                 console.warn('Stream extraction failed:', e.message);
             }
-            // Mark extraction as failed so we don't retry on every source change
             this._extractionFailed = true;
         }
 
         // Fallback: use embed iframe
         try {
+            Player.updateLoading('Loading video source', 'TRYING EMBED', 40);
             const result = await API.getSourceUrl(providerId, tmdbId, type, season, episode, imdbId);
 
             if (result.apiProvider) {
                 const success = await this.tryApiProvider(result.apiProvider, detail, type, season, episode);
                 if (!success) {
+                    Player.hideLoading();
                     this._failedSources.add(providerId);
                     this.autoFallbackSource();
                 }
@@ -874,11 +884,13 @@ const App = {
                 this._failedSources.clear();
                 this.activateAdShield();
             } else {
+                Player.hideLoading();
                 this._failedSources.add(providerId);
                 this.autoFallbackSource();
             }
         } catch (e) {
             console.error('changeSource error:', e);
+            Player.hideLoading();
             this._failedSources.add(providerId);
             this.showToast('Source unavailable, trying next...', 'error');
             this.autoFallbackSource();
@@ -1034,27 +1046,33 @@ const App = {
 
             const prefLang = this.storage.get('settings')?.subLang || 'eng';
 
-            // Group by language, pick best per language
-            const langMap = {};
-            allSubs.forEach(sub => {
-                if (!sub.url) return;
-                const key = sub.lang.toLowerCase();
-                if (!langMap[key] || sub.downloads > (langMap[key].downloads || 0)) {
-                    langMap[key] = sub;
-                }
+            // Show ALL subtitle sources (including same language from different providers)
+            // Filter out subs with no URL, deduplicate by URL
+            const seenUrls = new Set();
+            const uniqueSubs = allSubs.filter(sub => {
+                if (!sub.url || seenUrls.has(sub.url)) return false;
+                seenUrls.add(sub.url);
+                return true;
             });
 
-            const entries = Object.entries(langMap).sort((a, b) => {
-                if (a[0].startsWith(prefLang.substring(0, 2))) return -1;
-                if (b[0].startsWith(prefLang.substring(0, 2))) return 1;
-                return (b[1].downloads || 0) - (a[1].downloads || 0);
+            // Sort: preferred language first, then by downloads
+            uniqueSubs.sort((a, b) => {
+                const aLang = a.lang.toLowerCase();
+                const bLang = b.lang.toLowerCase();
+                const aPref = aLang.startsWith(prefLang.substring(0, 2));
+                const bPref = bLang.startsWith(prefLang.substring(0, 2));
+                if (aPref && !bPref) return -1;
+                if (!aPref && bPref) return 1;
+                // Same language group: sort by source then downloads
+                if (aLang === bLang) return (b.downloads || 0) - (a.downloads || 0);
+                return aLang.localeCompare(bLang);
             });
 
-            select.innerHTML = '<option value="">None</option>' + entries.map(([lang, sub]) =>
-                `<option value="${sub.url}">${sub.langName} (${sub.source})</option>`
+            select.innerHTML = '<option value="">None</option>' + uniqueSubs.map((sub, idx) =>
+                `<option value="${sub.url}">${sub.langName} — ${sub.source}</option>`
             ).join('');
 
-            if (entries.length === 0) {
+            if (uniqueSubs.length === 0) {
                 select.innerHTML = '<option value="">No subtitles found</option>';
             } else {
                 // Auto-select English subtitles by default
@@ -1074,10 +1092,16 @@ const App = {
     },
 
     async loadSubtitleTrack(url) {
-        if (!url) return;
+        if (!url) {
+            Player.disableSubtitles();
+            return;
+        }
         const proxyUrl = API.getSubtitleFileUrl(url);
+        // Don't clear ALL tracks — just add the new one and activate it
         Player.clearSubtitleTracks();
         Player.addSubtitleTrack('Selected', proxyUrl, 'en', true);
+        // Reset sync offset for new subtitle
+        Player.resetSubtitleOffset();
     },
 
     async loadWatchEpisodes(seasonNum) {

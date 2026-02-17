@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FilmPlus</title>
-    <link rel="stylesheet" href="/css/style.css?v=12">
+    <link rel="stylesheet" href="/css/style.css?v=13">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -234,6 +234,25 @@
                                 allow="autoplay; encrypted-media; picture-in-picture; fullscreen" 
                                 frameborder="0"></iframe>
                             <video id="player-video" controls crossorigin="anonymous" class="hidden"></video>
+                            <!-- Loading Overlay -->
+                            <div id="player-loading-overlay" class="player-loading-overlay">
+                                <div class="loading-content">
+                                    <div class="loading-rings">
+                                        <div class="ring ring-1"></div>
+                                        <div class="ring ring-2"></div>
+                                        <div class="ring ring-3"></div>
+                                        <div class="loading-icon"><i class="fas fa-play"></i></div>
+                                    </div>
+                                    <div class="loading-text">
+                                        <span id="loading-status">Connecting to HD server</span>
+                                        <span class="loading-dots"><span>.</span><span>.</span><span>.</span></span>
+                                    </div>
+                                    <div class="loading-progress">
+                                        <div id="loading-progress-bar" class="loading-progress-fill"></div>
+                                    </div>
+                                    <div id="loading-stage" class="loading-stage">Initializing</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="player-controls-bar">
@@ -241,13 +260,50 @@
                             <label>Source:</label>
                             <select id="source-select"></select>
                         </div>
+                        <div class="quality-selector">
+                            <label><i class="fas fa-sliders-h"></i> Quality:</label>
+                            <select id="quality-select"><option value="-1">Auto</option></select>
+                        </div>
                         <div class="subtitle-selector">
-                            <label><i class="fas fa-closed-captioning"></i> Subtitles:</label>
+                            <label><i class="fas fa-closed-captioning"></i> Subs:</label>
                             <select id="subtitle-select"><option value="">None</option></select>
+                            <button id="subtitle-settings-btn" class="ctrl-btn" title="Subtitle settings"><i class="fas fa-cog"></i></button>
                         </div>
                         <div class="player-info">
                             <span id="watch-title"></span>
                             <span id="watch-ep-info"></span>
+                        </div>
+                    </div>
+                    <!-- Subtitle Controls Panel -->
+                    <div id="subtitle-controls" class="subtitle-controls hidden">
+                        <div class="sub-ctrl-header">
+                            <span><i class="fas fa-closed-captioning"></i> Subtitle Settings</span>
+                            <button id="sub-ctrl-close" class="ctrl-btn"><i class="fas fa-times"></i></button>
+                        </div>
+                        <div class="sub-ctrl-row">
+                            <label>Sync Offset</label>
+                            <div class="sub-sync-controls">
+                                <button id="sub-sync-minus" class="ctrl-btn" title="-0.5s"><i class="fas fa-minus"></i></button>
+                                <span id="sub-sync-value">0.0s</span>
+                                <button id="sub-sync-plus" class="ctrl-btn" title="+0.5s"><i class="fas fa-plus"></i></button>
+                                <button id="sub-sync-reset" class="ctrl-btn-sm" title="Reset">Reset</button>
+                            </div>
+                        </div>
+                        <div class="sub-ctrl-row">
+                            <label>Font Size</label>
+                            <div class="sub-size-controls">
+                                <button id="sub-size-minus" class="ctrl-btn"><i class="fas fa-minus"></i></button>
+                                <span id="sub-size-value">100%</span>
+                                <button id="sub-size-plus" class="ctrl-btn"><i class="fas fa-plus"></i></button>
+                            </div>
+                        </div>
+                        <div class="sub-ctrl-row">
+                            <label>Background</label>
+                            <select id="sub-bg-select">
+                                <option value="rgba(0,0,0,0.75)">Dark</option>
+                                <option value="rgba(0,0,0,0.5)">Semi-transparent</option>
+                                <option value="transparent">None</option>
+                            </select>
                         </div>
                     </div>
                     <!-- TV Episode Navigator -->
@@ -355,8 +411,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.12/dist/hls.min.js"></script>
     <script src="/js/api.js?v=8"></script>
-    <script src="/js/player.js?v=8"></script>
-    <script src="/js/app.js?v=11"></script>
+    <script src="/js/player.js?v=9"></script>
+    <script src="/js/app.js?v=12"></script>
 
     <!-- Anti-popup & anti-redirect protection -->
     <script>
