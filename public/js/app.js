@@ -872,6 +872,7 @@ const App = {
         this._extractionFailed = false;
         this._preloadedStreams.clear();
         this._failedSources.clear();
+        this._preloadGeneration = (this._preloadGeneration || 0) + 1; // Invalidate stale preloads
         Player.clearSavedPosition();
 
         // Show loading overlay immediately
@@ -950,6 +951,8 @@ const App = {
         if (!this.sourcesCache) {
             this.sourcesCache = await API.getSources();
         }
+        // Restore source selector UI in case _showDirectStreamUI hid/modified it
+        this._restoreSourceSelector();
         const select = document.getElementById('source-select');
         select.innerHTML = this.sourcesCache.map(s =>
             `<option value="${s.id}">${s.name} ${s.quality || ''}</option>`
@@ -997,24 +1000,69 @@ const App = {
                 'vidsrc-scraper': 'VidSrc HD',
                 'vidsrc-icu': 'VidSrc ICU',
             }[label] || label;
-            sourceSelector.innerHTML = `
-                <label><i class="fas fa-check-circle" style="color: var(--accent);"></i> Source:</label>
-                <span class="direct-stream-badge">${prettyName} • Ad-Free</span>
-            `;
+            // Hide the select and original label but keep them in DOM
+            const select = document.getElementById('source-select');
+            if (select) select.style.display = 'none';
+            const origLabel = sourceSelector.querySelector('label:not(.direct-label)');
+            if (origLabel) origLabel.style.display = 'none';
+            // Remove any existing badge before adding new one
+            const existingBadge = sourceSelector.querySelector('.direct-stream-badge');
+            if (existingBadge) existingBadge.remove();
+            const existingLabel = sourceSelector.querySelector('.direct-label');
+            if (existingLabel) existingLabel.remove();
+            // Add badge alongside the hidden select
+            const badgeLabel = document.createElement('label');
+            badgeLabel.className = 'direct-label';
+            badgeLabel.innerHTML = '<i class="fas fa-check-circle" style="color: var(--accent);"></i> Source:';
+            const badge = document.createElement('span');
+            badge.className = 'direct-stream-badge';
+            badge.textContent = `${prettyName} • Ad-Free`;
+            sourceSelector.appendChild(badgeLabel);
+            sourceSelector.appendChild(badge);
         }
         // Show quality selector for direct streams
         const qs = document.querySelector('.quality-selector');
         if (qs) qs.style.display = '';
     },
 
+    // Restore the source selector to its original state (undo _showDirectStreamUI)
+    _restoreSourceSelector() {
+        const sourceSelector = document.querySelector('.source-selector');
+        if (!sourceSelector) return;
+        // Remove badges added by _showDirectStreamUI
+        const badge = sourceSelector.querySelector('.direct-stream-badge');
+        if (badge) badge.remove();
+        const directLabel = sourceSelector.querySelector('.direct-label');
+        if (directLabel) directLabel.remove();
+        // Show the original select + label
+        const select = document.getElementById('source-select');
+        if (select) {
+            select.style.display = '';
+        } else {
+            // Select was somehow destroyed — recreate it
+            const newSelect = document.createElement('select');
+            newSelect.id = 'source-select';
+            sourceSelector.appendChild(newSelect);
+            // Re-bind change event
+            newSelect.addEventListener('change', (e) => this.changeSource(e.target.value));
+        }
+        // Restore original label visibility
+        const origLabel = sourceSelector.querySelector('label:not(.direct-label)');
+        if (origLabel) origLabel.style.display = '';
+    },
+
+    _preloadGeneration: 0,
+
     // Preload all stream sources in parallel for instant switching
     async preloadAllSources() {
         const { tmdbId, type, season, episode, detail } = this.watchState;
         if (!tmdbId || !this.sourcesCache) return;
+        const gen = this._preloadGeneration; // Capture generation to detect stale preloads
 
         // Preload direct stream extraction in background (multi-extractor on server)
         if (!this._preloadedStreams.has('_direct')) {
             API.extractStream(tmdbId, type, season, episode).then(stream => {
+                if (gen !== this._preloadGeneration) return; // Stale — user navigated away
                 if (stream.success && stream.hlsUrl) {
                     this._preloadedStreams.set('_direct', stream);
                     console.log('[Preload] Direct stream cached via', stream.source);
@@ -1029,6 +1077,7 @@ const App = {
             if (this._preloadedStreams.has(source.id)) return;
             try {
                 const result = await API.getSourceUrl(source.id, tmdbId, type, season, episode, imdbId);
+                if (gen !== this._preloadGeneration) return; // Stale — user navigated away
                 if (result.url) {
                     this._preloadedStreams.set(source.id, result);
                     console.log(`[Preload] ${source.name} URL cached`);
