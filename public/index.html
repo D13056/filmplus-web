@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FilmPlus</title>
-    <link rel="stylesheet" href="/css/style.css?v=13">
+    <link rel="stylesheet" href="/css/style.css?v=15">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -256,6 +256,12 @@
                         </div>
                     </div>
                     <div class="player-controls-bar">
+                        <div class="player-extra-controls">
+                            <button id="skip-back-btn" class="ctrl-btn" title="Skip back 10s"><i class="fas fa-undo"></i> 10</button>
+                            <button id="skip-forward-btn" class="ctrl-btn" title="Skip forward 30s"><i class="fas fa-redo"></i> 30</button>
+                            <button id="speed-btn" class="ctrl-btn" title="Playback speed"><i class="fas fa-tachometer-alt"></i> <span id="speed-label">1x</span></button>
+                            <button id="pip-btn" class="ctrl-btn" title="Picture-in-Picture"><i class="fas fa-external-link-square-alt"></i></button>
+                        </div>
                         <div class="source-selector">
                             <label>Source:</label>
                             <select id="source-select"></select>
@@ -377,6 +383,16 @@
                         <select id="setting-theme">
                             <option value="dark">Dark</option>
                             <option value="light">Light</option>
+                            <option value="midnight">Midnight Blue</option>
+                            <option value="ocean">Ocean Teal</option>
+                            <option value="forest">Forest</option>
+                            <option value="sunset">Sunset</option>
+                            <option value="rosegold">Rose Gold</option>
+                            <option value="nebula">Purple Nebula</option>
+                            <option value="arctic">Arctic</option>
+                            <option value="mocha">Mocha</option>
+                            <option value="crimson">Crimson</option>
+                            <option value="emerald">Emerald</option>
                         </select>
                     </div>
                 </div>
@@ -409,10 +425,28 @@
         </div>
     </div>
 
+    <!-- Person Filmography Modal -->
+    <div id="person-modal" class="modal hidden">
+        <div class="modal-backdrop" onclick="App.closePersonModal()"></div>
+        <div class="modal-content person-modal-content">
+            <button class="modal-close" onclick="App.closePersonModal()"><i class="fas fa-times"></i></button>
+            <div class="person-header">
+                <img id="person-photo" class="person-photo" src="" alt="">
+                <div class="person-details">
+                    <h2 id="person-name"></h2>
+                    <div id="person-info" class="person-meta"></div>
+                    <p id="person-bio" class="person-bio"></p>
+                </div>
+            </div>
+            <h3 class="filmography-title">Filmography</h3>
+            <div id="person-filmography" class="filmography-grid"></div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.12/dist/hls.min.js"></script>
-    <script src="/js/api.js?v=8"></script>
-    <script src="/js/player.js?v=9"></script>
-    <script src="/js/app.js?v=12"></script>
+    <script src="/js/api.js?v=9"></script>
+    <script src="/js/player.js?v=10"></script>
+    <script src="/js/app.js?v=13"></script>
 
     <!-- Anti-popup & anti-redirect protection -->
     <script>

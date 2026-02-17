@@ -676,11 +676,11 @@ const App = {
         this.updateFavoriteButton();
         this.updateWatchlistButton();
 
-        // Cast
+        // Cast (clickable - shows filmography)
         const castScroll = document.querySelector('#detail-cast .cast-scroll');
         const cast = data.credits?.cast?.slice(0, 20) || [];
         castScroll.innerHTML = cast.map(person => `
-            <div class="cast-card">
+            <div class="cast-card" onclick="App.showPersonFilmography(${person.id})" style="cursor:pointer" title="View ${person.name}'s filmography">
                 <img src="${API.profile(person.profile_path)}" alt="${person.name}" onerror="this.src='/img/no-avatar.svg'" loading="lazy">
                 <h4>${person.name}</h4>
                 <span>${person.character || ''}</span>
@@ -701,9 +701,21 @@ const App = {
             seasonsSection.classList.add('hidden');
         }
 
-        // Similar
+        // Similar content - use TMDB similar, fallback to genre-based recommendations
         const similar = data.similar?.results?.slice(0, 15) || [];
-        this.renderRow('detail-similar', similar, type);
+        if (similar.length > 0) {
+            this.renderRow('detail-similar', similar, type);
+        } else {
+            // Fallback: discover by first genre
+            const firstGenre = data.genres?.[0]?.id;
+            if (firstGenre) {
+                API.discover(type, { genre: firstGenre }).then(disc => {
+                    const filtered = (disc.results || []).filter(r => r.id !== data.id).slice(0, 15);
+                    this.renderRow('detail-similar', filtered, type);
+                    this.initRowNavButtons();
+                }).catch(() => {});
+            }
+        }
         this.initRowNavButtons();  // init arrows for similar row
 
         // Trailer button
@@ -740,10 +752,11 @@ const App = {
     async loadWatch(type, tmdbId, season, episode) {
         this.watchState = { tmdbId, type, season: parseInt(season) || 1, episode: parseInt(episode) || 1, detail: null };
         this._extractionFailed = false; // Reset for new content
+        this._preloadedStreams.clear(); // Clear preloaded cache for new content
         Player.clearSavedPosition(); // New content = fresh start
 
         // Show loading overlay immediately
-        Player.showLoading('Loading movie info', 'FETCHING DETAILS');
+        Player.showLoading('Loading movie info', 'PREPARING YOUR EXPERIENCE');
 
         try {
             // Load detail info
@@ -823,9 +836,48 @@ const App = {
 
         // Load the source
         this.changeSource(select.value);
+
+        // Preload all other sources in background for instant switching
+        this.preloadAllSources();
     },
 
     _failedSources: new Set(),
+    _preloadedStreams: new Map(), // Cache preloaded stream URLs
+
+    // Preload all stream sources in parallel for instant switching
+    async preloadAllSources() {
+        const { tmdbId, type, season, episode, detail } = this.watchState;
+        if (!tmdbId || !this.sourcesCache) return;
+
+        // Preload direct stream extraction in background
+        if (!this._extractionFailed && !this._preloadedStreams.has('_direct')) {
+            API.extractStream(tmdbId, type, season, episode).then(stream => {
+                if (stream.success && stream.hlsUrl) {
+                    this._preloadedStreams.set('_direct', stream);
+                    console.log('[Preload] Direct stream cached');
+                }
+            }).catch(() => {});
+        }
+
+        // Preload embed URLs for all providers in parallel
+        const imdbId = detail?.external_ids?.imdb_id || '';
+        const embedProviders = this.sourcesCache.filter(s => !s.apiOnly);
+        const preloadPromises = embedProviders.map(async (source) => {
+            if (this._preloadedStreams.has(source.id)) return;
+            try {
+                const result = await API.getSourceUrl(source.id, tmdbId, type, season, episode, imdbId);
+                if (result.url) {
+                    this._preloadedStreams.set(source.id, result);
+                    console.log(`[Preload] ${source.name} URL cached`);
+                }
+            } catch (e) { /* skip */ }
+        });
+
+        // Run all in parallel, don't await — let them load in background
+        Promise.allSettled(preloadPromises).then(() => {
+            console.log(`[Preload] ${this._preloadedStreams.size} sources ready`);
+        });
+    },
 
     async changeSource(providerId) {
         const { tmdbId, type, season, episode, detail } = this.watchState;
@@ -835,15 +887,32 @@ const App = {
         Player.savePosition();
 
         // Show loading overlay
-        Player.showLoading('Connecting to HD server', 'INITIALIZING');
+        Player.showLoading('Connecting to premium server', 'INITIALIZING');
 
         // ─── Strategy: Extract direct stream first (ad-free), fallback to embed ───
         if (!this._extractionFailed) {
             try {
-                Player.updateLoading('Extracting HD stream', 'CONTACTING SERVER', 15);
+                // Check preloaded cache first for instant playback
+                const preloadedDirect = this._preloadedStreams.get('_direct');
+                if (preloadedDirect && preloadedDirect.success && preloadedDirect.hlsUrl) {
+                    Player.updateLoading('HD stream found', 'STARTING PLAYBACK', 50);
+                    Player.playHLSUrl(preloadedDirect.hlsUrl);
+                    this._failedSources.clear();
+                    if (preloadedDirect.subtitles && preloadedDirect.subtitles.length > 0) {
+                        preloadedDirect.subtitles.forEach((sub, i) => {
+                            const label = (typeof sub === 'object') ? (sub.label || `Sub ${i + 1}`) : `Sub ${i + 1}`;
+                            const url = (typeof sub === 'object') ? sub.url : sub;
+                            const lang = (typeof sub === 'object') ? (sub.lang || 'en') : 'en';
+                            Player.addSubtitleTrack(label, url, lang, i === 0);
+                        });
+                    }
+                    return;
+                }
+
+                Player.updateLoading('Finding best quality', 'CONNECTING TO HD SERVER', 15);
                 const stream = await API.extractStream(tmdbId, type, season, episode);
                 if (stream.success && stream.hlsUrl) {
-                    Player.updateLoading('Stream found', 'LOADING PLAYER', 50);
+                    Player.updateLoading('HD stream found', 'STARTING PLAYBACK', 50);
                     Player.playHLSUrl(stream.hlsUrl);
                     this._failedSources.clear();
                     
@@ -866,8 +935,11 @@ const App = {
 
         // Fallback: use embed iframe
         try {
-            Player.updateLoading('Loading video source', 'TRYING EMBED', 40);
-            const result = await API.getSourceUrl(providerId, tmdbId, type, season, episode, imdbId);
+            Player.updateLoading('Loading video source', 'CONNECTING TO SERVER', 40);
+
+            // Use preloaded source if available for instant switch
+            const preloaded = this._preloadedStreams.get(providerId);
+            const result = preloaded || await API.getSourceUrl(providerId, tmdbId, type, season, episode, imdbId);
 
             if (result.apiProvider) {
                 const success = await this.tryApiProvider(result.apiProvider, detail, type, season, episode);
@@ -935,18 +1007,41 @@ const App = {
         const nextSource = this.sourcesCache.find(s => !this._failedSources.has(s.id) && !s.apiOnly);
         if (nextSource) {
             select.value = nextSource.id;
-            this.showToast(`Trying ${nextSource.name} ${nextSource.quality || ''}...`, 'info');
+            this.showToast(`Trying ${nextSource.name} ${nextSource.quality || ''}...`);
             this.changeSource(nextSource.id);
         } else {
-            // All sources tried, reset and just use first embed source
+            // All sources tried — show unavailable message instead of ads
             this._failedSources.clear();
-            const firstEmbed = this.sourcesCache.find(s => !s.apiOnly);
-            if (firstEmbed) {
-                select.value = firstEmbed.id;
-                Player.playEmbed('');
-            }
-            this.showToast('No working sources available', 'error');
+            this.showSourceUnavailable();
         }
+    },
+
+    // Show a clean "source unavailable" message in the player area
+    showSourceUnavailable() {
+        Player.hideLoading();
+        const playerArea = document.getElementById('player-area');
+        // Remove any existing unavailable overlay
+        const existing = document.getElementById('source-unavailable-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'source-unavailable-overlay';
+        overlay.innerHTML = `
+            <div class="source-unavail-content">
+                <i class="fas fa-satellite-dish"></i>
+                <h3>Content Temporarily Unavailable</h3>
+                <p>All servers are currently busy or this title is not yet available for streaming.</p>
+                <div class="source-unavail-actions">
+                    <button class="btn btn-primary" onclick="App._failedSources.clear();App._extractionFailed=false;App._preloadedStreams.clear();App.loadSources();this.closest('#source-unavailable-overlay').remove();">
+                        <i class="fas fa-redo"></i> Try Again
+                    </button>
+                    <button class="btn btn-secondary" onclick="history.back();">
+                        <i class="fas fa-arrow-left"></i> Go Back
+                    </button>
+                </div>
+            </div>
+        `;
+        playerArea.appendChild(overlay);
     },
 
     async tryApiProvider(provider, detail, type, season, episode) {
@@ -1243,6 +1338,66 @@ const App = {
         document.getElementById('trailer-modal').classList.add('hidden');
     },
 
+    // ─── Person Filmography ───
+    async showPersonFilmography(personId) {
+        try {
+            this.showLoading();
+            const person = await API.getPerson(personId);
+            this.hideLoading();
+
+            // Combine cast credits, sort by popularity
+            const credits = person.combined_credits?.cast || [];
+            const sorted = credits
+                .filter(c => c.poster_path) // Only items with posters
+                .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
+                .slice(0, 30);
+
+            // Build modal content
+            const modal = document.getElementById('person-modal');
+            document.getElementById('person-name').textContent = person.name;
+            document.getElementById('person-photo').src = API.posterLg(person.profile_path) || '/img/no-avatar.svg';
+            document.getElementById('person-photo').onerror = function() { this.src = '/img/no-avatar.svg'; };
+
+            // Bio
+            const bio = person.biography?.slice(0, 300) || 'No biography available.';
+            document.getElementById('person-bio').textContent = bio + (person.biography?.length > 300 ? '...' : '');
+
+            // Info
+            const infoHtml = [];
+            if (person.birthday) infoHtml.push(`<span><i class="fas fa-birthday-cake"></i> ${person.birthday}</span>`);
+            if (person.place_of_birth) infoHtml.push(`<span><i class="fas fa-map-marker-alt"></i> ${person.place_of_birth}</span>`);
+            if (person.known_for_department) infoHtml.push(`<span><i class="fas fa-star"></i> ${person.known_for_department}</span>`);
+            document.getElementById('person-info').innerHTML = infoHtml.join('');
+
+            // Filmography grid  
+            document.getElementById('person-filmography').innerHTML = sorted.map(item => {
+                const title = item.title || item.name;
+                const year = (item.release_date || item.first_air_date || '').split('-')[0];
+                const type = item.media_type || (item.title ? 'movie' : 'tv');
+                const rating = item.vote_average?.toFixed(1) || '';
+                return `
+                    <div class="filmography-card" onclick="document.getElementById('person-modal').classList.add('hidden');App.navigate('${type}/${item.id}')">
+                        <img src="${API.poster(item.poster_path)}" alt="${title}" loading="lazy" onerror="this.src='/img/no-poster.svg'">
+                        <div class="filmography-info">
+                            <h4>${title}</h4>
+                            <span>${year}${item.character ? ' • ' + item.character : ''}${rating ? ' • ★ ' + rating : ''}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            modal.classList.remove('hidden');
+        } catch (e) {
+            this.hideLoading();
+            this.showToast('Could not load filmography', 'error');
+            console.error(e);
+        }
+    },
+
+    closePersonModal() {
+        document.getElementById('person-modal').classList.add('hidden');
+    },
+
     // ─── Genres ───
     async loadGenres() {
         try {
@@ -1287,14 +1442,17 @@ const App = {
         document.documentElement.setAttribute('data-theme', theme);
         this.storage.set('theme', theme);
         const icon = document.querySelector('#theme-toggle i');
-        icon.className = theme === 'dark' ? 'fas fa-moon' : 'fas fa-sun';
+        const lightThemes = ['light', 'arctic'];
+        icon.className = lightThemes.includes(theme) ? 'fas fa-sun' : 'fas fa-moon';
         const settingSelect = document.getElementById('setting-theme');
         if (settingSelect) settingSelect.value = theme;
     },
 
     toggleTheme() {
+        const themes = ['dark', 'light', 'midnight', 'ocean', 'forest', 'sunset', 'rosegold', 'nebula', 'arctic', 'mocha', 'crimson', 'emerald'];
         const current = this.storage.get('theme', 'dark');
-        this.setTheme(current === 'dark' ? 'light' : 'dark');
+        const idx = themes.indexOf(current);
+        this.setTheme(themes[(idx + 1) % themes.length]);
     },
 
     // ─── Settings ───

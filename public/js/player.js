@@ -13,11 +13,50 @@ const Player = {
     _subtitleOffset: 0,
     _subtitleFontSize: 100,
     _subtitleBg: 'rgba(0,0,0,0.75)',
+    _playbackSpeed: 1,
+    _speeds: [0.5, 0.75, 1, 1.25, 1.5, 2],
 
     init() {
         this.iframe = document.getElementById('player-iframe');
         this.video = document.getElementById('player-video');
         this._initSubtitleControls();
+        this._initExtraControls();
+    },
+
+    // ─── Extra Player Controls (skip, speed, PIP) ───
+
+    _initExtraControls() {
+        // Skip back 10s
+        document.getElementById('skip-back-btn')?.addEventListener('click', () => {
+            if (this.video && !this.video.classList.contains('hidden')) {
+                this.video.currentTime = Math.max(0, this.video.currentTime - 10);
+            }
+        });
+        // Skip forward 30s
+        document.getElementById('skip-forward-btn')?.addEventListener('click', () => {
+            if (this.video && !this.video.classList.contains('hidden')) {
+                this.video.currentTime = Math.min(this.video.duration || Infinity, this.video.currentTime + 30);
+            }
+        });
+        // Playback speed cycle
+        document.getElementById('speed-btn')?.addEventListener('click', () => {
+            if (this.video && !this.video.classList.contains('hidden')) {
+                const idx = this._speeds.indexOf(this._playbackSpeed);
+                this._playbackSpeed = this._speeds[(idx + 1) % this._speeds.length];
+                this.video.playbackRate = this._playbackSpeed;
+                document.getElementById('speed-label').textContent = this._playbackSpeed + 'x';
+            }
+        });
+        // Picture-in-Picture
+        document.getElementById('pip-btn')?.addEventListener('click', () => {
+            if (this.video && !this.video.classList.contains('hidden')) {
+                if (document.pictureInPictureElement) {
+                    document.exitPictureInPicture().catch(() => {});
+                } else {
+                    this.video.requestPictureInPicture().catch(() => {});
+                }
+            }
+        });
     },
 
     // ─── Loading Overlay ───
@@ -130,14 +169,13 @@ const Player = {
                 maxBufferLength: 120,          // Buffer up to 120s ahead
                 maxMaxBufferLength: 600,       // Allow up to 10min buffer
                 maxBufferSize: 200 * 1000 * 1000, // 200MB buffer
-                maxBufferHole: 0.5,
-                backBufferLength: 90,          // Keep 90s behind
+                maxBufferHole: 0.1,            // Minimal hole tolerance for smooth playback
+                backBufferLength: 120,         // Keep 120s behind for rewind
                 startLevel: -1,                // Auto-detect best quality
                 abrEwmaDefaultEstimate: 5000000, // Assume 5Mbps initially
                 enableWorker: true,
                 lowLatencyMode: false,
                 progressive: true,
-                // Start loading immediately
                 startPosition: -1,
                 // Faster ABR switching
                 abrEwmaFastLive: 3.0,
@@ -145,31 +183,37 @@ const Player = {
                 abrEwmaFastVoD: 3.0,
                 abrEwmaSlowVoD: 9.0,
                 abrBandWidthUpFactor: 0.7,
-                // Faster fragment loading
-                fragLoadingMaxRetry: 6,
-                manifestLoadingMaxRetry: 4,
-                levelLoadingMaxRetry: 4,
+                abrBandWidthFactor: 0.9,
+                // Faster fragment loading for less buffering
+                fragLoadingMaxRetry: 8,
+                fragLoadingRetryDelay: 500,
+                fragLoadingMaxRetryTimeout: 16000,
+                manifestLoadingMaxRetry: 6,
+                levelLoadingMaxRetry: 6,
+                // Preload next segments aggressively
+                testBandwidth: true,
+                startFragPrefetch: true, // Prefetch next fragment while playing
             });
 
-            this.updateLoading('Loading stream', 'FETCHING MANIFEST', 20);
+            this.updateLoading('Preparing your stream', 'CONNECTING TO HD SERVER', 20);
 
             this.hls.loadSource(url);
             this.hls.attachMedia(this.video);
 
             this.hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
-                this.updateLoading('Stream ready', 'BUFFERING VIDEO', 70);
+                this.updateLoading('Stream ready', 'PREPARING HD PLAYBACK', 70);
                 this._populateQualitySelector(data.levels);
                 this.video.play().catch(() => {});
                 this.restorePosition();
             });
 
             this.hls.on(Hls.Events.FRAG_BUFFERED, () => {
-                this.updateLoading('Buffering', 'LOADING SEGMENTS', 85);
+                this.updateLoading('Almost ready', 'OPTIMIZING QUALITY', 85);
             });
 
             // Hide overlay once video starts playing
             const onPlaying = () => {
-                this.updateLoading('Playing', 'ENJOY', 100);
+                this.updateLoading('Enjoy your movie', 'NOW PLAYING IN HD', 100);
                 this.hideLoading();
                 this.video.removeEventListener('playing', onPlaying);
             };
@@ -188,13 +232,31 @@ const Player = {
                 if (data.fatal) {
                     console.error('HLS Fatal Error:', data);
                     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                        this.updateLoading('Reconnecting', 'NETWORK ERROR — RETRYING', 30);
+                        this.updateLoading('Reconnecting', 'FINDING BEST SERVER', 30);
                         this.hls.startLoad();
                     } else {
                         this.hideLoading();
                         this.stopHLS();
                     }
+                } else if (data.details === 'bufferStalledError') {
+                    // Non-fatal stall: force load from current position
+                    console.warn('Buffer stalled, forcing recovery...');
+                    if (this.hls) this.hls.startLoad(this.video.currentTime);
                 }
+            });
+
+            // Auto-recover from freeze: if video stalls for 3s while not paused, force reload
+            this._stallTimer = null;
+            this.video.addEventListener('waiting', () => {
+                if (!this.video.paused && this.hls) {
+                    this._stallTimer = setTimeout(() => {
+                        console.warn('Stall recovery: forcing fragment reload');
+                        this.hls.startLoad(this.video.currentTime);
+                    }, 3000);
+                }
+            });
+            this.video.addEventListener('playing', () => {
+                if (this._stallTimer) { clearTimeout(this._stallTimer); this._stallTimer = null; }
             });
         } else if (this.video.canPlayType('application/vnd.apple.mpegurl')) {
             this.video.src = url;
