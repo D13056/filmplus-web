@@ -951,12 +951,16 @@ const App = {
         if (!this.sourcesCache) {
             this.sourcesCache = await API.getSources();
         }
-        // Restore source selector UI in case _showDirectStreamUI hid/modified it
+        // Restore source selector UI
         this._restoreSourceSelector();
         const select = document.getElementById('source-select');
-        select.innerHTML = this.sourcesCache.map(s =>
+
+        // Always show ALL servers in dropdown — direct extraction + all embed sources
+        let optionsHtml = '<option value="_direct">⚡ Premium HD • Ad-Free</option>';
+        optionsHtml += this.sourcesCache.map(s =>
             `<option value="${s.id}">${s.name} ${s.quality || ''}</option>`
         ).join('');
+        select.innerHTML = optionsHtml;
 
         // Also populate settings default source
         const settingSelect = document.getElementById('setting-default-source');
@@ -966,201 +970,186 @@ const App = {
             ).join('');
         }
 
-        // Use default source from settings, or auto-select best quality embed source
+        // === AGGRESSIVE PARALLEL PRELOAD — load ALL servers at once ===
+        this._preloadAllParallel();
+
+        // Use default source from settings, or start with direct extraction
         const defaultSource = this.storage.get('settings')?.defaultSource;
         if (defaultSource) {
             select.value = defaultSource;
         } else {
-            const bestSource = this.sourcesCache.find(s => !s.apiOnly);
-            if (bestSource) select.value = bestSource.id;
+            select.value = '_direct';
         }
 
-        // Load the source — await it so errors propagate properly
+        // Load the selected source — await it so errors propagate properly
         try {
             await this.changeSource(select.value);
         } catch (e) {
             console.error('Initial source load failed:', e);
-            // changeSource has its own fallback chain, so this is just a safety net
         }
-
-        // Preload all other sources in background for instant switching
-        this.preloadAllSources();
     },
 
     _failedSources: new Set(),
     _preloadedStreams: new Map(), // Cache preloaded stream URLs
 
-    // Show clean UI when direct stream extraction succeeds (no embed ad sources visible)
-    _showDirectStreamUI(sourceName) {
-        const sourceSelector = document.querySelector('.source-selector');
-        if (sourceSelector) {
-            const label = sourceName || 'Premium';
-            const prettyName = {
-                'moviesapi-flixcdn': 'FlixCDN HD',
-                'vidsrc-scraper': 'VidSrc HD',
-                'vidsrc-icu': 'VidSrc ICU',
-            }[label] || label;
-            // Hide the select and original label but keep them in DOM
-            const select = document.getElementById('source-select');
-            if (select) select.style.display = 'none';
-            const origLabel = sourceSelector.querySelector('label:not(.direct-label)');
-            if (origLabel) origLabel.style.display = 'none';
-            // Remove any existing badge before adding new one
-            const existingBadge = sourceSelector.querySelector('.direct-stream-badge');
-            if (existingBadge) existingBadge.remove();
-            const existingLabel = sourceSelector.querySelector('.direct-label');
-            if (existingLabel) existingLabel.remove();
-            // Add badge alongside the hidden select
-            const badgeLabel = document.createElement('label');
-            badgeLabel.className = 'direct-label';
-            badgeLabel.innerHTML = '<i class="fas fa-check-circle" style="color: var(--accent);"></i> Source:';
-            const badge = document.createElement('span');
-            badge.className = 'direct-stream-badge';
-            badge.textContent = `${prettyName} • Ad-Free`;
-            sourceSelector.appendChild(badgeLabel);
-            sourceSelector.appendChild(badge);
-        }
-        // Show quality selector for direct streams
+    // Mark the active source in the dropdown
+    _highlightActiveSource(providerId) {
+        const select = document.getElementById('source-select');
+        if (select) select.value = providerId;
+        // Show quality selector for direct/HLS streams
         const qs = document.querySelector('.quality-selector');
-        if (qs) qs.style.display = '';
+        if (qs) qs.style.display = providerId === '_direct' ? '' : 'none';
     },
 
-    // Restore the source selector to its original state (undo _showDirectStreamUI)
+    // Ensure source selector is visible and functional
     _restoreSourceSelector() {
         const sourceSelector = document.querySelector('.source-selector');
         if (!sourceSelector) return;
-        // Remove badges added by _showDirectStreamUI
-        const badge = sourceSelector.querySelector('.direct-stream-badge');
-        if (badge) badge.remove();
-        const directLabel = sourceSelector.querySelector('.direct-label');
-        if (directLabel) directLabel.remove();
-        // Show the original select + label
+        // Clean up any old badges from previous version
+        sourceSelector.querySelectorAll('.direct-stream-badge, .direct-label').forEach(el => el.remove());
+        // Ensure select and label are visible
         const select = document.getElementById('source-select');
         if (select) {
             select.style.display = '';
         } else {
-            // Select was somehow destroyed — recreate it
             const newSelect = document.createElement('select');
             newSelect.id = 'source-select';
             sourceSelector.appendChild(newSelect);
-            // Re-bind change event
             newSelect.addEventListener('change', (e) => this.changeSource(e.target.value));
         }
-        // Restore original label visibility
-        const origLabel = sourceSelector.querySelector('label:not(.direct-label)');
+        const origLabel = sourceSelector.querySelector('label');
         if (origLabel) origLabel.style.display = '';
     },
 
     _preloadGeneration: 0,
 
-    // Preload all stream sources in parallel for instant switching
-    async preloadAllSources() {
+    // === AGGRESSIVE PARALLEL PRELOAD — all servers at once ===
+    _preloadAllParallel() {
         const { tmdbId, type, season, episode, detail } = this.watchState;
         if (!tmdbId || !this.sourcesCache) return;
-        const gen = this._preloadGeneration; // Capture generation to detect stale preloads
+        const gen = this._preloadGeneration;
 
-        // Preload direct stream extraction in background (multi-extractor on server)
+        console.log('[Preload] Loading ALL servers in parallel...');
+
+        // 1. Direct stream extraction (ad-free HLS)
         if (!this._preloadedStreams.has('_direct')) {
             API.extractStream(tmdbId, type, season, episode).then(stream => {
-                if (gen !== this._preloadGeneration) return; // Stale — user navigated away
+                if (gen !== this._preloadGeneration) return;
                 if (stream.success && stream.hlsUrl) {
                     this._preloadedStreams.set('_direct', stream);
-                    console.log('[Preload] Direct stream cached via', stream.source);
+                    console.log('[Preload] ⚡ Direct stream ready via', stream.source);
                 }
             }).catch(() => {});
         }
 
-        // Preload embed URLs for all providers in parallel
+        // 2. ALL embed sources — fire all at once
         const imdbId = detail?.external_ids?.imdb_id || '';
-        const embedProviders = this.sourcesCache.filter(s => !s.apiOnly);
-        const preloadPromises = embedProviders.map(async (source) => {
+        this.sourcesCache.forEach(source => {
             if (this._preloadedStreams.has(source.id)) return;
-            try {
-                const result = await API.getSourceUrl(source.id, tmdbId, type, season, episode, imdbId);
-                if (gen !== this._preloadGeneration) return; // Stale — user navigated away
-                if (result.url) {
-                    this._preloadedStreams.set(source.id, result);
-                    console.log(`[Preload] ${source.name} URL cached`);
+            if (source.apiOnly) {
+                // API sources (MorphTV, TeaTV) — preload search results
+                const title = detail?.title || detail?.name || '';
+                const year = (detail?.release_date || detail?.first_air_date || '').split('-')[0];
+                let apiPromise;
+                if (source.id === 'morphtv') {
+                    apiPromise = API.searchMorphTV(title, year, type === 'tv' ? season : null, type === 'tv' ? episode : null);
+                } else if (source.id === 'teatv') {
+                    apiPromise = API.searchTeaTV(imdbId || tmdbId, type === 'tv' ? season : null, type === 'tv' ? episode : null, imdbId);
                 }
-            } catch (e) { /* skip */ }
-        });
-
-        // Run all in parallel, don't await — let them load in background
-        Promise.allSettled(preloadPromises).then(() => {
-            console.log(`[Preload] ${this._preloadedStreams.size} sources ready`);
+                if (apiPromise) {
+                    apiPromise.then(result => {
+                        if (gen !== this._preloadGeneration) return;
+                        this._preloadedStreams.set(source.id, { apiResult: result, apiProvider: source.id });
+                        console.log(`[Preload] ${source.name} API cached`);
+                    }).catch(() => {});
+                }
+            } else {
+                // Embed sources — get URL
+                API.getSourceUrl(source.id, tmdbId, type, season, episode, imdbId).then(result => {
+                    if (gen !== this._preloadGeneration) return;
+                    if (result.url || result.apiProvider) {
+                        this._preloadedStreams.set(source.id, result);
+                        console.log(`[Preload] ${source.name} ready`);
+                    }
+                }).catch(() => {});
+            }
         });
     },
 
     async changeSource(providerId) {
         const { tmdbId, type, season, episode, detail } = this.watchState;
-        if (!tmdbId) return; // Guard against calls with no content loaded
+        if (!tmdbId) return;
         const imdbId = detail?.external_ids?.imdb_id || '';
 
-        // Save current playback position before switching
         Player.savePosition();
+        Player.showLoading('Connecting to server', 'INITIALIZING');
 
-        // Show loading overlay
-        Player.showLoading('Connecting to premium server', 'INITIALIZING');
-
-        // ─── Strategy: ALWAYS try direct extraction first (ad-free, multi-extractor chain on server) ───
-        try {
-            // Check preloaded cache first for instant playback
-            const preloadedDirect = this._preloadedStreams.get('_direct');
-            if (preloadedDirect && preloadedDirect.success && preloadedDirect.hlsUrl) {
-                Player.updateLoading('HD stream found', 'STARTING PLAYBACK', 50);
-                Player.playHLSUrl(preloadedDirect.hlsUrl);
-                this._failedSources.clear();
-                // Hide source selector — direct extraction is ad-free
-                this._showDirectStreamUI(preloadedDirect.source);
-                if (preloadedDirect.subtitles && preloadedDirect.subtitles.length > 0) {
-                    preloadedDirect.subtitles.forEach((sub, i) => {
-                        const label = (typeof sub === 'object') ? (sub.label || `Sub ${i + 1}`) : `Sub ${i + 1}`;
-                        const url = (typeof sub === 'object') ? sub.url : sub;
-                        const lang = (typeof sub === 'object') ? (sub.lang || 'en') : 'en';
-                        Player.addSubtitleTrack(label, url, lang, i === 0);
-                    });
+        // ─── Direct extraction (ad-free HLS) ───
+        if (providerId === '_direct') {
+            try {
+                // Use preloaded cache for instant playback
+                let stream = this._preloadedStreams.get('_direct');
+                if (!stream || !stream.success) {
+                    Player.updateLoading('Finding best quality', 'SCANNING PREMIUM SERVERS', 15);
+                    stream = await API.extractStream(tmdbId, type, season, episode);
+                    if (stream.success && stream.hlsUrl) {
+                        this._preloadedStreams.set('_direct', stream);
+                    }
                 }
-                return;
-            }
-
-            Player.updateLoading('Finding best quality', 'SCANNING PREMIUM SERVERS', 15);
-            const stream = await API.extractStream(tmdbId, type, season, episode);
-            if (stream.success && stream.hlsUrl) {
-                Player.updateLoading('HD stream found', 'STARTING PLAYBACK', 50);
-                Player.playHLSUrl(stream.hlsUrl);
-                this._failedSources.clear();
-                this._preloadedStreams.set('_direct', stream); // Cache for re-use
-                // Show clean source info instead of embed selector
-                this._showDirectStreamUI(stream.source);
-                
-                // Add extracted subtitles if any
-                if (stream.subtitles && stream.subtitles.length > 0) {
-                    stream.subtitles.forEach((sub, i) => {
-                        const label = (typeof sub === 'object') ? (sub.label || `Sub ${i + 1}`) : `Sub ${i + 1}`;
-                        const url = (typeof sub === 'object') ? sub.url : sub;
-                        const lang = (typeof sub === 'object') ? (sub.lang || 'en') : 'en';
-                        Player.addSubtitleTrack(label, url, lang, i === 0);
-                    });
+                if (stream && stream.success && stream.hlsUrl) {
+                    Player.updateLoading('HD stream found', 'STARTING PLAYBACK', 50);
+                    Player.playHLSUrl(stream.hlsUrl);
+                    this._failedSources.clear();
+                    this._highlightActiveSource('_direct');
+                    // Add extracted subtitles if any
+                    if (stream.subtitles && stream.subtitles.length > 0) {
+                        stream.subtitles.forEach((sub, i) => {
+                            const label = (typeof sub === 'object') ? (sub.label || `Sub ${i + 1}`) : `Sub ${i + 1}`;
+                            const url = (typeof sub === 'object') ? sub.url : sub;
+                            const lang = (typeof sub === 'object') ? (sub.lang || 'en') : 'en';
+                            Player.addSubtitleTrack(label, url, lang, i === 0);
+                        });
+                    }
+                    return;
                 }
-                return;
+            } catch (e) {
+                console.warn('Direct extraction failed:', e.message);
             }
-        } catch (e) {
-            console.warn('Stream extraction failed:', e.message);
+            // Direct failed — instantly try next server
+            this._failedSources.add('_direct');
+            this.autoFallbackSource();
+            return;
         }
 
-        // Fallback: use embed iframe (only if ALL server-side extractors failed)
-        console.warn('All direct extractors failed, falling back to embed sources');
+        // ─── Embed / API source ───
         try {
-            Player.updateLoading('Loading video source', 'CONNECTING TO SERVER', 40);
-
-            // Use preloaded source if available for instant switch
+            Player.updateLoading('Loading source', 'CONNECTING TO SERVER', 40);
+            // Use preloaded cache for instant switch
             const preloaded = this._preloadedStreams.get(providerId);
+
+            // API providers (MorphTV, TeaTV)
+            if (preloaded?.apiProvider || preloaded?.apiResult) {
+                const apiId = preloaded.apiProvider || providerId;
+                let success = false;
+                if (preloaded.apiResult) {
+                    // Use preloaded API result directly
+                    success = this._playApiResult(preloaded.apiResult, apiId);
+                }
+                if (!success) {
+                    success = await this.tryApiProvider(apiId, detail, type, season, episode);
+                }
+                if (!success) {
+                    this._failedSources.add(providerId);
+                    this.autoFallbackSource();
+                }
+                return;
+            }
+
             const result = preloaded || await API.getSourceUrl(providerId, tmdbId, type, season, episode, imdbId);
 
             if (result.apiProvider) {
                 const success = await this.tryApiProvider(result.apiProvider, detail, type, season, episode);
                 if (!success) {
-                    Player.hideLoading();
                     this._failedSources.add(providerId);
                     this.autoFallbackSource();
                 }
@@ -1170,19 +1159,36 @@ const App = {
             if (result.url) {
                 Player.playEmbed(result.url);
                 this._failedSources.clear();
+                this._highlightActiveSource(providerId);
                 this.activateAdShield();
             } else {
-                Player.hideLoading();
                 this._failedSources.add(providerId);
                 this.autoFallbackSource();
             }
         } catch (e) {
             console.error('changeSource error:', e);
-            Player.hideLoading();
             this._failedSources.add(providerId);
-            this.showToast('Source unavailable, trying next...', 'error');
             this.autoFallbackSource();
         }
+    },
+
+    // Play from preloaded API result (MorphTV/TeaTV)
+    _playApiResult(result, provider) {
+        const items = result?.data || result?.links || result?.results || [];
+        if (!Array.isArray(items) || items.length === 0) return false;
+        const sorted = [...items].sort((a, b) => {
+            const qA = parseInt((a.quality || '0').replace(/[^0-9]/g, '')) || 0;
+            const qB = parseInt((b.quality || '0').replace(/[^0-9]/g, '')) || 0;
+            return qB - qA;
+        });
+        const link = sorted.find(d => d.file || d.link || d.url);
+        if (link) {
+            const videoUrl = link.file || link.link || link.url;
+            Player.playDirect(videoUrl);
+            this.showToast(`Playing via ${provider}`, 'success');
+            return true;
+        }
+        return false;
     },
 
     // Smart ad shield - absorbs first click (popup trigger), then lets video controls work
@@ -1215,19 +1221,22 @@ const App = {
         }
     },
 
-    // Auto-fallback to next best embed source (tracks all failed sources to prevent loops)
+    // Instant auto-fallback to next server — uses preloaded cache for zero delay
     autoFallbackSource() {
         if (!this.sourcesCache) return;
         const select = document.getElementById('source-select');
-        // Find next embed source that hasn't failed yet
-        const nextSource = this.sourcesCache.find(s => !this._failedSources.has(s.id) && !s.apiOnly);
+        // Build full source list: _direct + all embed sources
+        const allSources = [{ id: '_direct', name: 'Premium HD' }, ...this.sourcesCache];
+        // Find next source that hasn't failed
+        const nextSource = allSources.find(s => !this._failedSources.has(s.id));
         if (nextSource) {
-            select.value = nextSource.id;
-            this.showToast(`Trying ${nextSource.name} ${nextSource.quality || ''}...`);
+            if (select) select.value = nextSource.id;
+            this.showToast(`⚡ Switching to ${nextSource.name}...`);
             this.changeSource(nextSource.id);
         } else {
-            // All sources tried — show unavailable message instead of ads
+            // All sources tried
             this._failedSources.clear();
+            Player.hideLoading();
             this.showSourceUnavailable();
         }
     },

@@ -165,32 +165,30 @@ const Player = {
         this.stopHLS();
         if (Hls.isSupported()) {
             this.hls = new Hls({
-                // ═══ ALIEN ZERO-BUFFER STRATEGY ═══
-                // Phase 1: Start LOWEST quality → instant first frame (< 1s)
-                // Phase 2: Aggressively pre-buffer → build 60s cushion
-                // Phase 3: Upgrade to max quality → seamless HD switch
+                // ═══ ZERO-BUFFER INSTANT PLAY STRATEGY ═══
+                // Start lowest → instant first frame, then upgrade to max
                 startLevel: 0,                 // START at lowest quality for instant play
-                maxBufferLength: 180,          // Buffer up to 3 minutes ahead
+                maxBufferLength: 300,          // Buffer up to 5 minutes ahead
                 maxMaxBufferLength: 600,       // Allow up to 10min buffer
-                maxBufferSize: 300 * 1000 * 1000, // 300MB buffer pool
-                maxBufferHole: 0.05,           // Ultra-tight hole tolerance
-                backBufferLength: 180,         // Keep 3min behind for rewind
-                // Aggressive bandwidth estimation
-                abrEwmaDefaultEstimate: 8000000, // Assume 8Mbps to start high ASAP
-                abrBandWidthUpFactor: 0.5,     // Upgrade quality eagerly (lower = more eager)
+                maxBufferSize: 500 * 1000 * 1000, // 500MB buffer pool
+                maxBufferHole: 0.1,            // Tight hole tolerance
+                backBufferLength: 300,         // Keep 5min behind for rewind
+                // Aggressive bandwidth estimation — assume fast connection
+                abrEwmaDefaultEstimate: 10000000, // Assume 10Mbps
+                abrBandWidthUpFactor: 0.4,     // Upgrade quality very eagerly
                 abrBandWidthFactor: 0.95,      // Downgrade quality reluctantly
-                abrEwmaFastLive: 2.0,          // React fast to bandwidth changes
-                abrEwmaSlowLive: 6.0,
-                abrEwmaFastVoD: 2.0,
-                abrEwmaSlowVoD: 6.0,
-                // Fragment loading - ultra aggressive
-                fragLoadingMaxRetry: 10,
-                fragLoadingRetryDelay: 300,
-                fragLoadingMaxRetryTimeout: 20000,
-                manifestLoadingMaxRetry: 8,
-                levelLoadingMaxRetry: 8,
-                manifestLoadingRetryDelay: 500,
-                levelLoadingRetryDelay: 500,
+                abrEwmaFastLive: 1.5,
+                abrEwmaSlowLive: 4.0,
+                abrEwmaFastVoD: 1.5,
+                abrEwmaSlowVoD: 4.0,
+                // Fragment loading — ultra aggressive retries
+                fragLoadingMaxRetry: 12,
+                fragLoadingRetryDelay: 200,
+                fragLoadingMaxRetryTimeout: 25000,
+                manifestLoadingMaxRetry: 10,
+                levelLoadingMaxRetry: 10,
+                manifestLoadingRetryDelay: 300,
+                levelLoadingRetryDelay: 300,
                 // Pre-fetch & worker acceleration
                 enableWorker: true,
                 lowLatencyMode: false,
@@ -198,7 +196,6 @@ const Player = {
                 startPosition: -1,
                 testBandwidth: true,
                 startFragPrefetch: true,       // Prefetch next fragment
-                // Lower watermarks to trigger loading sooner
                 highBufferWatchdogPeriod: 1,   // Check buffer every 1s
             });
 
