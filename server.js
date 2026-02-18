@@ -921,7 +921,9 @@ async function extractStreamFromFlixHQ(tmdbId, type, season, episode, server) {
     }
     
     // Fetch sources from the requested server (upcloud or vidcloud)
-    const sources = await FlixHQ.fetchEpisodeSources(episodeId, server);
+    // Must pass match.id (e.g. 'movie/watch-...') as mediaId so the library
+    // uses the correct movie endpoint instead of the TV-show endpoint.
+    const sources = await FlixHQ.fetchEpisodeSources(episodeId, match.id, server);
     if (!sources?.sources?.length) throw new Error(`No sources from FlixHQ ${server}`);
     
     const m3u8 = sources.sources.find(s => s.isM3U8) || sources.sources[0];
