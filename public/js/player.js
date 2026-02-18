@@ -228,42 +228,57 @@ const Player = {
         this.stopHLS();
         if (Hls.isSupported()) {
             this.hls = new Hls({
-                // ═══ FAST-START STREAMING STRATEGY ═══
-                // Auto quality from start, aggressive prebuffering, minimal stall
+                // ═══ UC-BROWSER-STYLE FAST-START STREAMING ═══
+                //
+                // Strategy from UC Browser's Apollo player:
+                // 1. Small first_buffer (start playing FAST) → then grow buffer in background
+                // 2. Aggressive prefetching with connection reuse
+                // 3. Fast quality switching — drop quality on stall, upgrade eagerly
+                // 4. Compact back-buffer to prevent SourceBuffer overflow
+
                 startLevel: -1,                // Will be overridden to 720p after manifest parsed
-                maxBufferLength: 300,          // Buffer up to 5 minutes ahead
-                maxMaxBufferLength: 600,       // Allow up to 10min buffer
-                maxBufferSize: 500 * 1000 * 1000, // 500MB buffer pool
-                maxBufferHole: 0.1,            // Tight hole tolerance
-                backBufferLength: 300,         // Keep 5min behind for rewind
-                // Aggressive bandwidth estimation — high initial estimate for fast CDNs
-                abrEwmaDefaultEstimate: 20000000, // Assume 20Mbps (CDNs are fast)
-                abrBandWidthUpFactor: 0.3,     // Upgrade quality very eagerly
-                abrBandWidthFactor: 0.95,      // Downgrade quality reluctantly
+
+                // ─── Buffer Management (UC-Style: first_buffer → fixed_buffer) ───
+                maxBufferLength: 60,           // Buffer 60s ahead (UC's "fixed_buffer_time")
+                maxMaxBufferLength: 120,       // Allow growing to 2min on fast connections
+                maxBufferSize: 250 * 1000 * 1000, // 250MB buffer pool (prevents SourceBuffer overflow)
+                maxBufferHole: 0.3,            // Slightly relaxed hole tolerance to avoid stalls
+                backBufferLength: 30,          // Keep only 30s behind (UC cleans aggressively)
+
+                // ─── Bandwidth Estimation (UC-Style: fast initial, aggressive upgrade) ───
+                abrEwmaDefaultEstimate: 20000000, // Assume 20Mbps initially (CDNs are fast)
+                abrBandWidthUpFactor: 0.2,     // Upgrade quality VERY eagerly (UC-style)
+                abrBandWidthFactor: 0.95,      // Downgrade reluctantly
                 abrEwmaFastLive: 1.0,
                 abrEwmaSlowLive: 3.0,
                 abrEwmaFastVoD: 1.0,
                 abrEwmaSlowVoD: 3.0,
-                // Fragment loading — ultra aggressive retries
-                fragLoadingMaxRetry: 12,
-                fragLoadingRetryDelay: 200,
-                fragLoadingMaxRetryTimeout: 25000,
+
+                // ─── Fragment Loading (UC-Style: aggressive retry + fast timeout) ──
+                fragLoadingMaxRetry: 12,       // UC's "dl_retrycount" — many retries
+                fragLoadingRetryDelay: 100,    // Start retry in 100ms (was 200)
+                fragLoadingMaxRetryTimeout: 12000, // Max 12s retry window
                 manifestLoadingMaxRetry: 10,
                 levelLoadingMaxRetry: 10,
-                manifestLoadingRetryDelay: 300,
-                levelLoadingRetryDelay: 300,
-                // Pre-fetch & worker acceleration
-                enableWorker: true,
+                manifestLoadingRetryDelay: 200,
+                levelLoadingRetryDelay: 200,
+                // Fragment loading timeout — fail fast and retry (UC-style fast error detection)
+                fragLoadingTimeOut: 15000,
+
+                // ─── Prefetch & Worker (UC-Style: parallel prefetch + worker threads) ──
+                enableWorker: true,            // Offload demuxing to web worker
                 lowLatencyMode: false,
-                progressive: true,
+                progressive: true,             // Progressive fragment delivery (stream while downloading)
                 startPosition: -1,
                 testBandwidth: true,
-                startFragPrefetch: true,       // Prefetch next fragment
-                highBufferWatchdogPeriod: 1,   // Check buffer every 1s
-                // Faster level switching
-                capLevelToPlayerSize: false,    // Don't cap quality to player size
-                nudgeOffset: 0.1,              // Faster nudge on stall
-                nudgeMaxRetry: 5,
+                startFragPrefetch: true,       // UC's "enable_download_ts_during_hls_parse"
+                highBufferWatchdogPeriod: 1,   // Monitor buffer every 1s
+
+                // ─── Quality & Recovery (UC-Style: fast switching, compact nudge) ──
+                capLevelToPlayerSize: false,    // Allow full resolution regardless of player size
+                nudgeOffset: 0.2,              // Bigger nudge on stall to skip corrupt data
+                nudgeMaxRetry: 8,              // More nudge attempts before giving up
+                appendErrorMaxRetry: 5,        // Retry on SourceBuffer append errors
             });
 
             this.updateLoading('Preparing your stream', 'CONNECTING TO HD SERVER', 20);
@@ -307,12 +322,12 @@ const Player = {
                 if (data.fatal) {
                     console.error('HLS Fatal Error:', data.type, data.details);
                     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                        // Exponential backoff retry for fatal network errors
+                        // UC-Style exponential backoff retry for fatal network errors
                         this._networkRetries = (this._networkRetries || 0) + 1;
-                        if (this._networkRetries <= 5) {
-                            const delay = Math.min(1000 * Math.pow(2, this._networkRetries - 1), 10000);
+                        if (this._networkRetries <= 8) {
+                            const delay = Math.min(500 * Math.pow(1.5, this._networkRetries - 1), 8000);
                             console.warn(`[HLS] Fatal network error, retry #${this._networkRetries} in ${delay}ms`);
-                            this.updateLoading('Reconnecting', `RETRY ${this._networkRetries}/5`, 30);
+                            this.updateLoading('Reconnecting', `RETRY ${this._networkRetries}/8`, 30);
                             setTimeout(() => { if (this.hls) this.hls.startLoad(); }, delay);
                         } else {
                             console.error('[HLS] Max network retries exceeded');
@@ -326,35 +341,46 @@ const Player = {
                         this.stopHLS();
                     }
                 } else if (data.details === 'bufferStalledError') {
-                    // Non-fatal stall: aggressively reload from current position
-                    console.warn('Buffer stalled, forcing aggressive recovery...');
+                    // UC-Style stall recovery: drop quality immediately for fastest recovery
+                    console.warn('Buffer stalled, UC-style aggressive recovery...');
                     if (this.hls) {
-                        // Temporarily drop quality for faster recovery
                         const currentLevel = this.hls.currentLevel;
                         if (currentLevel > 0) {
-                            this.hls.currentLevel = Math.max(0, currentLevel - 1);
-                            setTimeout(() => { if (this.hls) this.hls.currentLevel = -1; }, 5000);
+                            this.hls.currentLevel = 0; // Drop to lowest quality instantly
+                            // Restore auto quality after buffer recovers
+                            setTimeout(() => { if (this.hls) this.hls.currentLevel = -1; }, 6000);
                         }
                         this.hls.startLoad(this.video.currentTime);
                     }
                 }
             });
 
-            // Auto-recover from freeze: if video stalls for 2s while not paused, force reload
+            // UC-Style freeze recovery: if video stalls for 1.5s while not paused, force reload
+            // (UC uses bad_conn_time_ms_threshold for detecting bad connections)
             this._stallTimer = null;
+            this._stallCount = 0;
             this.video.addEventListener('waiting', () => {
                 if (!this.video.paused && this.hls) {
                     this._stallTimer = setTimeout(() => {
-                        console.warn('Stall recovery: forcing fragment reload + quality drop');
+                        this._stallCount++;
+                        console.warn(`Stall recovery #${this._stallCount}: forcing quality drop + reload`);
                         if (this.hls) {
-                            // Drop quality temporarily for faster recovery
-                            const level = this.hls.currentLevel;
-                            if (level > 0) this.hls.currentLevel = Math.max(0, level - 1);
-                            this.hls.startLoad(this.video.currentTime);
-                            // Restore auto quality after recovery
-                            setTimeout(() => { if (this.hls) this.hls.currentLevel = -1; }, 8000);
+                            // Progressive quality drop based on stall frequency
+                            if (this._stallCount >= 3) {
+                                // Multiple stalls — lock to lowest quality
+                                this.hls.currentLevel = 0;
+                                this.hls.startLoad(this.video.currentTime);
+                                // Unlock after longer period
+                                setTimeout(() => { if (this.hls) this.hls.currentLevel = -1; this._stallCount = 0; }, 15000);
+                            } else {
+                                // Drop one level
+                                const level = this.hls.currentLevel;
+                                if (level > 0) this.hls.currentLevel = Math.max(0, level - 1);
+                                this.hls.startLoad(this.video.currentTime);
+                                setTimeout(() => { if (this.hls) this.hls.currentLevel = -1; }, 6000);
+                            }
                         }
-                    }, 2000);
+                    }, 1500); // 1.5s stall threshold (was 2s)
                 }
             });
             this.video.addEventListener('playing', () => {

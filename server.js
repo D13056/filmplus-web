@@ -4,6 +4,41 @@ const fetch = require('node-fetch');
 const cors = require('cors');
 const path = require('path');
 const crypto = require('crypto');
+const http = require('http');
+const https = require('https');
+
+// ─── UC-Browser-Style Keep-Alive Agent Pool ───
+// Reuse TCP/TLS connections to CDN hosts (saves ~100-200ms per segment on handshake)
+const httpAgent = new http.Agent({  keepAlive: true, maxSockets: 64, maxFreeSockets: 16, timeout: 30000 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 64, maxFreeSockets: 16, timeout: 30000 });
+function agentFor(url) { return url.startsWith('https') ? httpsAgent : httpAgent; }
+
+// ─── In-Memory Segment Cache (UC-Style) ───
+// Caches recently fetched segments in RAM for instant re-delivery
+// Max ~150MB, LRU eviction
+const segmentCache = new Map();
+const SEG_CACHE_MAX_BYTES = 150 * 1024 * 1024;
+let segCacheBytes = 0;
+function segCacheSet(key, buf) {
+    if (buf.length > 5 * 1024 * 1024) return; // Skip segments > 5MB
+    // Evict oldest entries until under limit
+    while (segCacheBytes + buf.length > SEG_CACHE_MAX_BYTES && segmentCache.size > 0) {
+        const oldest = segmentCache.keys().next().value;
+        const old = segmentCache.get(oldest);
+        segCacheBytes -= old.length;
+        segmentCache.delete(oldest);
+    }
+    segmentCache.set(key, buf);
+    segCacheBytes += buf.length;
+}
+function segCacheGet(key) {
+    const buf = segmentCache.get(key);
+    if (!buf) return null;
+    // Move to end (LRU)
+    segmentCache.delete(key);
+    segmentCache.set(key, buf);
+    return buf;
+}
 
 // Dynamic import for ESM vidsrc-scraper module
 let scrapeVidsrc = null;
@@ -1062,6 +1097,22 @@ app.get('/api/stream-proxy', async (req, res) => {
 async function handleStreamProxy(url, customReferer, res) {
         const parsedUrl = new URL(url);
         const hostname = parsedUrl.hostname;
+        const isSegment = !url.includes('.m3u8') && !url.includes('cf-master');
+
+        // ═══ CHECK SEGMENT CACHE FIRST (UC-Style in-memory cache) ═══
+        if (isSegment) {
+            const cached = segCacheGet(url);
+            if (cached) {
+                res.set('Access-Control-Allow-Origin', '*');
+                res.set('Access-Control-Allow-Headers', 'Range');
+                res.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length');
+                res.set('Content-Type', 'video/MP2T');
+                res.set('Content-Length', cached.length);
+                res.set('Cache-Control', 'public, max-age=86400, immutable');
+                res.set('X-Cache', 'HIT');
+                return res.send(cached);
+            }
+        }
 
         // Determine correct Referer:
         // 1. Custom referer from query param (e.g. FlixHQ CDNs need streameeeeee.site)
@@ -1084,6 +1135,7 @@ async function handleStreamProxy(url, customReferer, res) {
 
         const baseHeaders = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Connection': 'keep-alive',
         };
 
         // Some CDNs (e.g. VidSrc segment hosts) actively reject requests that include
@@ -1097,12 +1149,14 @@ async function handleStreamProxy(url, customReferer, res) {
             headers['Origin'] = origin;
         }
 
-        let response = await fetch(url, { headers, redirect: 'follow', timeout: 15000 });
+        // Use keep-alive agent (UC-Style connection pooling)
+        const fetchOpts = { headers, redirect: 'follow', timeout: 15000, agent: agentFor(url) };
+        let response = await fetch(url, fetchOpts);
 
         // If 403 and we sent Referer, retry without Referer/Origin
         // (VidSrc segment CDNs like comityofcognomen.site reject any Referer)
         if (response.status === 403 && !skipReferer) {
-            response = await fetch(url, { headers: baseHeaders, redirect: 'follow', timeout: 15000 });
+            response = await fetch(url, { headers: baseHeaders, redirect: 'follow', timeout: 15000, agent: agentFor(url) });
             if (response.ok) {
                 noRefererHosts.add(hostname);
                 console.log(`[Proxy] Host ${hostname} rejects Referer — cached for future requests`);
@@ -1133,6 +1187,9 @@ async function handleStreamProxy(url, customReferer, res) {
                 return `${baseUrl}${rawUrl}`;
             }
             
+            // Collect segment URLs for prefetching
+            const segUrlsToPreload = [];
+            
             // Rewrite every non-comment, non-empty line (segments can be .ts, .html, or anything)
             // Also rewrite URI= attributes in #EXT-X-MAP and #EXT-X-KEY tags
             playlist = playlist.split('\n').map(line => {
@@ -1150,6 +1207,7 @@ async function handleStreamProxy(url, customReferer, res) {
                 if (trimmed.startsWith('#')) return line;
                 
                 const absoluteUrl = resolveUrl(trimmed);
+                segUrlsToPreload.push(absoluteUrl);
                 return `/api/s/${encodeStreamUrl(absoluteUrl)}${refererSuffix}`;
             }).join('\n');
             
@@ -1157,17 +1215,46 @@ async function handleStreamProxy(url, customReferer, res) {
             res.set('Content-Type', 'application/vnd.apple.mpegurl');
             res.set('Cache-Control', 'public, max-age=300');
             res.send(playlist);
+            
+            // ═══ UC-Style Background Prefetch ═══
+            // Pre-download first 3 segments so they're in cache when HLS.js requests them
+            const preloadCount = Math.min(3, segUrlsToPreload.length);
+            for (let i = 0; i < preloadCount; i++) {
+                const segUrl = segUrlsToPreload[i];
+                if (segCacheGet(segUrl)) continue; // Already cached
+                // Fire-and-forget prefetch
+                const pfHost = new URL(segUrl).hostname;
+                const pfSkipRef = noRefererHosts.has(pfHost);
+                const pfHeaders = { ...baseHeaders };
+                if (!pfSkipRef) { pfHeaders['Referer'] = referer; pfHeaders['Origin'] = origin; }
+                fetch(segUrl, { headers: pfHeaders, timeout: 15000, agent: agentFor(segUrl) })
+                    .then(async r => { if (r.ok) { const buf = await r.buffer(); segCacheSet(segUrl, buf); } })
+                    .catch(() => {}); // Silent fail for prefetch
+            }
         } else {
-            // For .ts segments and other binary data — STREAM directly (no buffering)
-            // This is critical for reducing latency: data flows to client as it arrives
+            // ═══ Segment Delivery ═══
             const contentLength = response.headers.get('content-length');
-            if (contentLength) res.set('Content-Length', contentLength);
             // Force correct video content-type even if CDN disguises as image
             // (some CDNs like UpCloud return image/jpg for .ts segments)
             res.set('Content-Type', 'video/MP2T');
             // Cache segments aggressively — they never change
             res.set('Cache-Control', 'public, max-age=86400, immutable');
-            response.body.pipe(res);
+            res.set('X-Cache', 'MISS');
+            
+            // For small/medium segments: buffer into memory, cache, then send
+            // For large segments: stream directly to avoid memory pressure
+            const size = parseInt(contentLength) || 0;
+            if (size > 0 && size < 5 * 1024 * 1024) {
+                // Buffer, cache, and send
+                const buf = await response.buffer();
+                segCacheSet(url, buf);
+                res.set('Content-Length', buf.length);
+                res.send(buf);
+            } else {
+                // Stream directly for large or unknown-size segments
+                if (contentLength) res.set('Content-Length', contentLength);
+                response.body.pipe(res);
+            }
         }
 }
 
