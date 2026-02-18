@@ -282,6 +282,8 @@ const Player = {
 
             this.hls.on(Hls.Events.FRAG_BUFFERED, () => {
                 this.updateLoading('Almost ready', 'OPTIMIZING QUALITY', 85);
+                // Reset network retry counter on successful fragment
+                this._networkRetries = 0;
             });
 
             // Hide overlay once video starts playing
@@ -303,10 +305,19 @@ const Player = {
 
             this.hls.on(Hls.Events.ERROR, (event, data) => {
                 if (data.fatal) {
-                    console.error('HLS Fatal Error:', data);
+                    console.error('HLS Fatal Error:', data.type, data.details);
                     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                        this.updateLoading('Reconnecting', 'FINDING BEST SERVER', 30);
-                        setTimeout(() => { if (this.hls) this.hls.startLoad(); }, 1000);
+                        // Exponential backoff retry for fatal network errors
+                        this._networkRetries = (this._networkRetries || 0) + 1;
+                        if (this._networkRetries <= 5) {
+                            const delay = Math.min(1000 * Math.pow(2, this._networkRetries - 1), 10000);
+                            console.warn(`[HLS] Fatal network error, retry #${this._networkRetries} in ${delay}ms`);
+                            this.updateLoading('Reconnecting', `RETRY ${this._networkRetries}/5`, 30);
+                            setTimeout(() => { if (this.hls) this.hls.startLoad(); }, delay);
+                        } else {
+                            console.error('[HLS] Max network retries exceeded');
+                            this.hideLoading();
+                        }
                     } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
                         console.warn('HLS media error, attempting recovery...');
                         this.hls.recoverMediaError();

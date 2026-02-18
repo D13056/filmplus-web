@@ -27,6 +27,11 @@ try {
 // In-memory cache for TMDB title lookups (avoids repeat API calls)
 const tmdbTitleCache = new Map();
 
+// Per-hostname cache: CDN hosts that reject Referer headers
+// When a segment fetch returns 403 and succeeds without Referer, the host is
+// added here so subsequent requests skip the Referer immediately.
+const noRefererHosts = new Set();
+
 // ─── Stream URL Obfuscation ───
 // Encode/decode stream URLs so real CDN URLs are hidden from browser Network tab
 const STREAM_KEY = crypto.randomBytes(16).toString('hex'); // Random key per server instance
@@ -1056,15 +1061,16 @@ app.get('/api/stream-proxy', async (req, res) => {
 
 async function handleStreamProxy(url, customReferer, res) {
         const parsedUrl = new URL(url);
+        const hostname = parsedUrl.hostname;
 
         // Determine correct Referer:
         // 1. Custom referer from query param (e.g. FlixHQ CDNs need streameeeeee.site)
         // 2. FlixCDN streams (direct IP or flixcdn/tiktok CDN) need flixcdn.cyou
         // 3. Default to the target URL's origin
         let referer, origin;
-        const isFlixcdnStream = /^\d+\.\d+\.\d+\.\d+$/.test(parsedUrl.hostname) || 
-                                parsedUrl.hostname.includes('flixcdn') ||
-                                parsedUrl.hostname.includes('tiktokcdn');
+        const isFlixcdnStream = /^\d+\.\d+\.\d+\.\d+$/.test(hostname) || 
+                                hostname.includes('flixcdn') ||
+                                hostname.includes('tiktokcdn');
         if (customReferer) {
             referer = customReferer;
             origin = new URL(customReferer).origin;
@@ -1076,22 +1082,41 @@ async function handleStreamProxy(url, customReferer, res) {
             origin = parsedUrl.origin;
         }
 
-        const response = await fetch(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Referer': referer,
-                'Origin': origin
-            },
-            redirect: 'follow'
-        });
+        const baseHeaders = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        };
+
+        // Some CDNs (e.g. VidSrc segment hosts) actively reject requests that include
+        // a Referer header.  We keep a per-hostname cache so we only pay the retry
+        // cost once: the first 403 triggers a no-referer retry, and if it succeeds we
+        // remember the host for the rest of the server's lifetime.
+        const skipReferer = noRefererHosts.has(hostname);
+        const headers = { ...baseHeaders };
+        if (!skipReferer) {
+            headers['Referer'] = referer;
+            headers['Origin'] = origin;
+        }
+
+        let response = await fetch(url, { headers, redirect: 'follow', timeout: 15000 });
+
+        // If 403 and we sent Referer, retry without Referer/Origin
+        // (VidSrc segment CDNs like comityofcognomen.site reject any Referer)
+        if (response.status === 403 && !skipReferer) {
+            response = await fetch(url, { headers: baseHeaders, redirect: 'follow', timeout: 15000 });
+            if (response.ok) {
+                noRefererHosts.add(hostname);
+                console.log(`[Proxy] Host ${hostname} rejects Referer — cached for future requests`);
+            }
+        }
 
         if (!response.ok) {
             return res.status(response.status).send('Stream unavailable');
         }
 
         const contentType = response.headers.get('content-type') || 'application/octet-stream';
-        res.set('Content-Type', contentType);
         res.set('Access-Control-Allow-Origin', '*');
+        res.set('Access-Control-Allow-Headers', 'Range');
+        res.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length');
         
         // Propagate referer param for sub-requests (m3u8 → segment URLs)
         // Use obfuscated /api/s/ format for all rewritten URLs
@@ -1128,13 +1153,20 @@ async function handleStreamProxy(url, customReferer, res) {
                 return `/api/s/${encodeStreamUrl(absoluteUrl)}${refererSuffix}`;
             }).join('\n');
             
+            // Short cache for playlists — variant m3u8 rarely changes
             res.set('Content-Type', 'application/vnd.apple.mpegurl');
+            res.set('Cache-Control', 'public, max-age=300');
             res.send(playlist);
         } else {
             // For .ts segments and other binary data — STREAM directly (no buffering)
             // This is critical for reducing latency: data flows to client as it arrives
             const contentLength = response.headers.get('content-length');
             if (contentLength) res.set('Content-Length', contentLength);
+            // Force correct video content-type even if CDN disguises as image
+            // (some CDNs like UpCloud return image/jpg for .ts segments)
+            res.set('Content-Type', 'video/MP2T');
+            // Cache segments aggressively — they never change
+            res.set('Cache-Control', 'public, max-age=86400, immutable');
             response.body.pipe(res);
         }
 }
