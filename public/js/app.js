@@ -955,9 +955,8 @@ const App = {
         this._restoreSourceSelector();
         const select = document.getElementById('source-select');
 
-        // Always show ALL servers in dropdown — direct extraction + all embed sources
-        let optionsHtml = '<option value="_direct">⚡ Premium HD • Ad-Free</option>';
-        optionsHtml += this.sourcesCache.map(s =>
+        // Show ALL servers in dropdown — every source extracts streams natively (no iframes)
+        let optionsHtml = this.sourcesCache.map(s =>
             `<option value="${s.id}">${s.name} ${s.quality || ''}</option>`
         ).join('');
         select.innerHTML = optionsHtml;
@@ -973,12 +972,12 @@ const App = {
         // === AGGRESSIVE PARALLEL PRELOAD — load ALL servers at once ===
         this._preloadAllParallel();
 
-        // Use default source from settings, or start with direct extraction
+        // Use default source from settings, or start with first source
         const defaultSource = this.storage.get('settings')?.defaultSource;
-        if (defaultSource) {
+        if (defaultSource && this.sourcesCache.find(s => s.id === defaultSource)) {
             select.value = defaultSource;
         } else {
-            select.value = '_direct';
+            select.value = this.sourcesCache[0]?.id || 'moviesapi';
         }
 
         // Load the selected source — await it so errors propagate properly
@@ -996,9 +995,9 @@ const App = {
     _highlightActiveSource(providerId) {
         const select = document.getElementById('source-select');
         if (select) select.value = providerId;
-        // Show quality selector for direct/HLS streams
+        // Show quality selector for all HLS sources (all play natively now)
         const qs = document.querySelector('.quality-selector');
-        if (qs) qs.style.display = providerId === '_direct' ? '' : 'none';
+        if (qs) qs.style.display = '';
     },
 
     // Ensure source selector is visible and functional
@@ -1029,27 +1028,16 @@ const App = {
         if (!tmdbId || !this.sourcesCache) return;
         const gen = this._preloadGeneration;
 
-        console.log('[Preload] Loading ALL servers in parallel...');
+        console.log('[Preload] Extracting ALL servers in parallel (no iframes)...');
 
-        // 1. Direct stream extraction (ad-free HLS)
-        if (!this._preloadedStreams.has('_direct')) {
-            API.extractStream(tmdbId, type, season, episode).then(stream => {
-                if (gen !== this._preloadGeneration) return;
-                if (stream.success && stream.hlsUrl) {
-                    this._preloadedStreams.set('_direct', stream);
-                    console.log('[Preload] ⚡ Direct stream ready via', stream.source);
-                }
-            }).catch(() => {});
-        }
-
-        // 2. ALL embed sources — fire all at once
-        const imdbId = detail?.external_ids?.imdb_id || '';
         this.sourcesCache.forEach(source => {
             if (this._preloadedStreams.has(source.id)) return;
+
             if (source.apiOnly) {
                 // API sources (MorphTV, TeaTV) — preload search results
                 const title = detail?.title || detail?.name || '';
                 const year = (detail?.release_date || detail?.first_air_date || '').split('-')[0];
+                const imdbId = detail?.external_ids?.imdb_id || '';
                 let apiPromise;
                 if (source.id === 'morphtv') {
                     apiPromise = API.searchMorphTV(title, year, type === 'tv' ? season : null, type === 'tv' ? episode : null);
@@ -1064,12 +1052,12 @@ const App = {
                     }).catch(() => {});
                 }
             } else {
-                // Embed sources — get URL
-                API.getSourceUrl(source.id, tmdbId, type, season, episode, imdbId).then(result => {
+                // Extraction sources — extract stream server-side (no iframe!)
+                API.extractStream(tmdbId, type, season, episode, source.id).then(stream => {
                     if (gen !== this._preloadGeneration) return;
-                    if (result.url || result.apiProvider) {
-                        this._preloadedStreams.set(source.id, result);
-                        console.log(`[Preload] ${source.name} ready`);
+                    if (stream.success && stream.hlsUrl) {
+                        this._preloadedStreams.set(source.id, stream);
+                        console.log(`[Preload] ⚡ ${source.name} stream extracted & cached`);
                     }
                 }).catch(() => {});
             }
@@ -1079,97 +1067,77 @@ const App = {
     async changeSource(providerId) {
         const { tmdbId, type, season, episode, detail } = this.watchState;
         if (!tmdbId) return;
-        const imdbId = detail?.external_ids?.imdb_id || '';
 
         Player.savePosition();
         Player.showLoading('Connecting to server', 'INITIALIZING');
 
-        // ─── Direct extraction (ad-free HLS) ───
-        if (providerId === '_direct') {
+        const sourceInfo = this.sourcesCache?.find(s => s.id === providerId);
+        const sourceName = sourceInfo?.name || providerId;
+
+        // ─── API providers (MorphTV, TeaTV) — direct MP4 playback ───
+        if (sourceInfo?.apiOnly) {
             try {
-                // Use preloaded cache for instant playback
-                let stream = this._preloadedStreams.get('_direct');
-                if (!stream || !stream.success) {
-                    Player.updateLoading('Finding best quality', 'SCANNING PREMIUM SERVERS', 15);
-                    stream = await API.extractStream(tmdbId, type, season, episode);
-                    if (stream.success && stream.hlsUrl) {
-                        this._preloadedStreams.set('_direct', stream);
+                Player.updateLoading(`Loading ${sourceName}`, 'SEARCHING API', 30);
+                const preloaded = this._preloadedStreams.get(providerId);
+                if (preloaded?.apiResult) {
+                    const success = this._playApiResult(preloaded.apiResult, providerId);
+                    if (success) {
+                        this._failedSources.clear();
+                        this._highlightActiveSource(providerId);
+                        return;
                     }
                 }
-                if (stream && stream.success && stream.hlsUrl) {
-                    Player.updateLoading('HD stream found', 'STARTING PLAYBACK', 50);
-                    Player.playHLSUrl(stream.hlsUrl);
+                const success = await this.tryApiProvider(providerId, detail, type, season, episode);
+                if (success) {
                     this._failedSources.clear();
-                    this._highlightActiveSource('_direct');
-                    // Add extracted subtitles if any
-                    if (stream.subtitles && stream.subtitles.length > 0) {
-                        stream.subtitles.forEach((sub, i) => {
-                            const label = (typeof sub === 'object') ? (sub.label || `Sub ${i + 1}`) : `Sub ${i + 1}`;
-                            const url = (typeof sub === 'object') ? sub.url : sub;
-                            const lang = (typeof sub === 'object') ? (sub.lang || 'en') : 'en';
-                            Player.addSubtitleTrack(label, url, lang, i === 0);
-                        });
-                    }
+                    this._highlightActiveSource(providerId);
                     return;
                 }
             } catch (e) {
-                console.warn('Direct extraction failed:', e.message);
+                console.warn(`${sourceName} failed:`, e.message);
             }
-            // Direct failed — instantly try next server
-            this._failedSources.add('_direct');
+            this._failedSources.add(providerId);
             this.autoFallbackSource();
             return;
         }
 
-        // ─── Embed / API source ───
+        // ─── Extraction sources — server-side stream extraction → native HLS player ───
         try {
-            Player.updateLoading('Loading source', 'CONNECTING TO SERVER', 40);
-            // Use preloaded cache for instant switch
-            const preloaded = this._preloadedStreams.get(providerId);
-
-            // API providers (MorphTV, TeaTV)
-            if (preloaded?.apiProvider || preloaded?.apiResult) {
-                const apiId = preloaded.apiProvider || providerId;
-                let success = false;
-                if (preloaded.apiResult) {
-                    // Use preloaded API result directly
-                    success = this._playApiResult(preloaded.apiResult, apiId);
+            // Check preloaded cache first for instant playback
+            let stream = this._preloadedStreams.get(providerId);
+            if (stream && stream.success && stream.hlsUrl) {
+                Player.updateLoading('Stream ready', 'STARTING PLAYBACK', 80);
+            } else {
+                Player.updateLoading(`Extracting from ${sourceName}`, 'SCANNING SERVERS', 15);
+                stream = await API.extractStream(tmdbId, type, season, episode, providerId);
+                if (stream.success && stream.hlsUrl) {
+                    this._preloadedStreams.set(providerId, stream);
                 }
-                if (!success) {
-                    success = await this.tryApiProvider(apiId, detail, type, season, episode);
-                }
-                if (!success) {
-                    this._failedSources.add(providerId);
-                    this.autoFallbackSource();
-                }
-                return;
             }
 
-            const result = preloaded || await API.getSourceUrl(providerId, tmdbId, type, season, episode, imdbId);
-
-            if (result.apiProvider) {
-                const success = await this.tryApiProvider(result.apiProvider, detail, type, season, episode);
-                if (!success) {
-                    this._failedSources.add(providerId);
-                    this.autoFallbackSource();
-                }
-                return;
-            }
-
-            if (result.url) {
-                Player.playEmbed(result.url);
+            if (stream && stream.success && stream.hlsUrl) {
+                Player.playHLSUrl(stream.hlsUrl);
                 this._failedSources.clear();
                 this._highlightActiveSource(providerId);
-                this.activateAdShield();
-            } else {
-                this._failedSources.add(providerId);
-                this.autoFallbackSource();
+                // Add extracted subtitles if any
+                if (stream.subtitles && stream.subtitles.length > 0) {
+                    stream.subtitles.forEach((sub, i) => {
+                        const label = (typeof sub === 'object') ? (sub.label || `Sub ${i + 1}`) : `Sub ${i + 1}`;
+                        const url = (typeof sub === 'object') ? sub.url : sub;
+                        const lang = (typeof sub === 'object') ? (sub.lang || 'en') : 'en';
+                        Player.addSubtitleTrack(label, url, lang, i === 0);
+                    });
+                }
+                console.log(`[Play] ${sourceName} via ${stream.source} — native HLS`);
+                return;
             }
         } catch (e) {
-            console.error('changeSource error:', e);
-            this._failedSources.add(providerId);
-            this.autoFallbackSource();
+            console.warn(`${sourceName} extraction failed:`, e.message);
         }
+
+        // Extraction failed — try next server
+        this._failedSources.add(providerId);
+        this.autoFallbackSource();
     },
 
     // Play from preloaded API result (MorphTV/TeaTV)
@@ -1225,10 +1193,8 @@ const App = {
     autoFallbackSource() {
         if (!this.sourcesCache) return;
         const select = document.getElementById('source-select');
-        // Build full source list: _direct + all embed sources
-        const allSources = [{ id: '_direct', name: 'Premium HD' }, ...this.sourcesCache];
         // Find next source that hasn't failed
-        const nextSource = allSources.find(s => !this._failedSources.has(s.id));
+        const nextSource = this.sourcesCache.find(s => !this._failedSources.has(s.id));
         if (nextSource) {
             if (select) select.value = nextSource.id;
             this.showToast(`⚡ Switching to ${nextSource.name}...`);

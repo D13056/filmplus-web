@@ -624,47 +624,22 @@ app.get('/api/keys-info', (req, res) => {
     });
 });
 
-// ─── Source Providers Configuration (sorted by quality) ───
-// providers with directStream: true will try server-side stream extraction first
+// ─── Source Providers Configuration ───
+// ALL sources use server-side stream extraction — no iframes, no ads
 const SOURCE_PROVIDERS = [
-    { id: 'vidsrc2', name: 'VidSrc Pro', quality: '4K', maxRes: 2160, priority: 1 },
-    { id: 'vidsrcicu', name: 'VidSrc ICU', quality: '4K', maxRes: 2160, priority: 2 },
-    { id: 'autoembedcc', name: 'AutoEmbed CC', quality: '1080P', maxRes: 1080, priority: 3 },
-    { id: 'multiembed', name: 'MultiEmbed', quality: '1080P', maxRes: 1080, priority: 4 },
-    { id: 'vidsrc', name: 'VidSrc', quality: '1080P', maxRes: 1080, priority: 5 },
-    { id: 'vidsrccc', name: 'VidSrc CC', quality: '1080P', maxRes: 1080, priority: 6 },
-    { id: 'morphtv', name: 'MorphTV', quality: '720P', maxRes: 720, priority: 7, apiOnly: true },
-    { id: 'teatv', name: 'TeaTV', quality: '720P', maxRes: 720, priority: 8, apiOnly: true },
+    { id: 'moviesapi', name: 'Premium HD', quality: '4K', maxRes: 2160, priority: 1, extractor: 'moviesapi-flixcdn' },
+    { id: 'vidsrc', name: 'VidSrc Pro', quality: '1080P', maxRes: 1080, priority: 2, extractor: 'vidsrc-scraper' },
+    { id: 'vidsrcicu', name: 'VidSrc ICU', quality: '1080P', maxRes: 1080, priority: 3, extractor: 'vidsrc-icu' },
+    { id: 'morphtv', name: 'MorphTV', quality: '720P', maxRes: 720, priority: 4, apiOnly: true },
+    { id: 'teatv', name: 'TeaTV', quality: '720P', maxRes: 720, priority: 5, apiOnly: true },
 ];
 
-function getEmbedUrl(providerId, tmdbId, type, season, episode, imdbId) {
-    switch (providerId) {
-        case 'vidsrc':
-            if (type === 'tv') return `https://vidsrc.xyz/embed/tv/${tmdbId}/${season}/${episode}`;
-            return `https://vidsrc.xyz/embed/movie/${tmdbId}`;
-        case 'vidsrc2':
-            if (type === 'tv') return `https://vidsrc.to/embed/tv/${tmdbId}/${season}/${episode}`;
-            return `https://vidsrc.to/embed/movie/${tmdbId}`;
-        case 'vidsrcicu':
-            if (type === 'tv') return `https://vidsrc.icu/embed/tv/${tmdbId}/${season}/${episode}`;
-            return `https://vidsrc.icu/embed/movie/${tmdbId}`;
-        case 'vidsrccc':
-            if (type === 'tv') return `https://vidsrc.cc/v2/embed/tv/${tmdbId}/${season}/${episode}`;
-            return `https://vidsrc.cc/v2/embed/movie/${tmdbId}`;
-        case 'multiembed':
-            if (type === 'tv') return `https://multiembed.mov/directstream.php?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`;
-            return `https://multiembed.mov/directstream.php?video_id=${tmdbId}&tmdb=1`;
-        case 'morphtv':
-            return null;
-        case 'teatv':
-            return null;
-        case 'autoembedcc':
-            if (type === 'tv') return `https://player.autoembed.cc/embed/tv/${tmdbId}/${season}/${episode}`;
-            return `https://player.autoembed.cc/embed/movie/${tmdbId}`;
-        default:
-            return null;
-    }
-}
+// Map source IDs to their specific extractors
+const EXTRACTOR_MAP = {
+    'moviesapi': 'moviesapi-flixcdn',
+    'vidsrc': 'vidsrc-scraper',
+    'vidsrcicu': 'vidsrc-icu',
+};
 
 // ─── Server-side Stream Extraction via MoviesAPI + FlixCDN ───
 // Fetches video metadata from moviesapi.to, decrypts FlixCDN response to get direct HLS URLs
@@ -849,16 +824,31 @@ async function extractStreamMulti(tmdbId, type, season, episode) {
 }
 
 app.get('/api/extract-stream', async (req, res) => {
-    const { tmdbId, type, season, episode } = req.query;
+    const { tmdbId, type, season, episode, source } = req.query;
     if (!tmdbId) return res.status(400).json({ error: 'tmdbId required' });
 
     try {
-        const result = await extractStreamMulti(
-            tmdbId,
-            type || 'movie',
-            season || null,
-            episode || null
-        );
+        let result;
+        const t = type || 'movie';
+        const s = season || null;
+        const e = episode || null;
+
+        // If specific source requested, use only that extractor
+        if (source && EXTRACTOR_MAP[source]) {
+            const extractorName = EXTRACTOR_MAP[source];
+            const extractorFn = {
+                'moviesapi-flixcdn': () => extractStreamFromMoviesAPI(tmdbId, t, s, e),
+                'vidsrc-scraper': () => extractStreamFromVidsrc(tmdbId, t, s, e),
+                'vidsrc-icu': () => extractStreamFromVidsrcICU(tmdbId, t, s, e),
+            }[extractorName];
+            if (!extractorFn) throw new Error(`Unknown extractor: ${extractorName}`);
+            const r = await extractorFn();
+            if (!r || !r.streamUrl) throw new Error(`${extractorName} returned no stream`);
+            result = { ...r, source: extractorName };
+        } else {
+            // No specific source — try all extractors in chain
+            result = await extractStreamMulti(tmdbId, t, s, e);
+        }
 
         // Proxy the stream URL through our server to avoid CORS
         const proxiedUrl = `/api/stream-proxy?url=${encodeURIComponent(result.streamUrl)}`;
@@ -965,16 +955,6 @@ app.get('/api/stream-proxy', async (req, res) => {
 
 app.get('/api/sources', (req, res) => {
     res.json(SOURCE_PROVIDERS);
-});
-
-app.get('/api/source-url', (req, res) => {
-    const { provider, tmdbId, type, season, episode, imdbId } = req.query;
-    if (provider === 'morphtv' || provider === 'teatv') {
-        return res.json({ url: null, apiProvider: provider, note: `Use /api/${provider}/search endpoint` });
-    }
-    const url = getEmbedUrl(provider, tmdbId, type, season, episode, imdbId);
-    if (!url) return res.status(404).json({ error: 'Provider not found' });
-    res.json({ url });
 });
 
 // ─── SPA Fallback ───

@@ -124,11 +124,12 @@ const API = {
     },
 
     // ─── Direct Stream Extraction (ad-free m3u8) ───
-    async extractStream(tmdbId, type, season, episode) {
+    async extractStream(tmdbId, type, season, episode, source) {
         let url = `/api/extract-stream?tmdbId=${tmdbId}&type=${type || 'movie'}`;
         if (season) url += `&season=${season}`;
         if (episode) url += `&episode=${episode}`;
-        return this._fetch(url);
+        if (source) url += `&source=${source}`;
+        return this._fetch(url, { timeout: 30000 });
     },
 
     // ─── Subtitles (Multi-source) ───
