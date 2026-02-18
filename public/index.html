@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FilmPlus</title>
-    <link rel="stylesheet" href="/css/style.css?v=18">
+    <link rel="stylesheet" href="/css/style.css?v=19">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -125,6 +125,39 @@
                             <button class="row-nav right" aria-label="Scroll right"><i class="fas fa-chevron-right"></i></button>
                         </div>
                     </div>
+                    <div class="content-row" id="now-playing">
+                        <div class="row-header"><h2><i class="fas fa-film"></i> Now Playing in Theaters</h2><a class="see-all" data-type="movie" data-cat="now_playing">See All →</a></div>
+                        <div class="row-scroll-wrap">
+                            <button class="row-nav left hidden" aria-label="Scroll left"><i class="fas fa-chevron-left"></i></button>
+                            <div class="row-scroll"></div>
+                            <button class="row-nav right" aria-label="Scroll right"><i class="fas fa-chevron-right"></i></button>
+                        </div>
+                    </div>
+                    <div class="content-row" id="airing-today">
+                        <div class="row-header"><h2><i class="fas fa-broadcast-tower"></i> Airing Today</h2><a class="see-all" data-type="tv" data-cat="airing_today">See All →</a></div>
+                        <div class="row-scroll-wrap">
+                            <button class="row-nav left hidden" aria-label="Scroll left"><i class="fas fa-chevron-left"></i></button>
+                            <div class="row-scroll"></div>
+                            <button class="row-nav right" aria-label="Scroll right"><i class="fas fa-chevron-right"></i></button>
+                        </div>
+                    </div>
+                    <div class="content-row" id="upcoming-movies">
+                        <div class="row-header"><h2><i class="fas fa-calendar-alt"></i> Upcoming Movies</h2><a class="see-all" data-type="movie" data-cat="upcoming">See All →</a></div>
+                        <div class="row-scroll-wrap">
+                            <button class="row-nav left hidden" aria-label="Scroll left"><i class="fas fa-chevron-left"></i></button>
+                            <div class="row-scroll"></div>
+                            <button class="row-nav right" aria-label="Scroll right"><i class="fas fa-chevron-right"></i></button>
+                        </div>
+                    </div>
+                    <div class="content-row" id="on-the-air">
+                        <div class="row-header"><h2><i class="fas fa-tv"></i> Currently On The Air</h2><a class="see-all" data-type="tv" data-cat="on_the_air">See All →</a></div>
+                        <div class="row-scroll-wrap">
+                            <button class="row-nav left hidden" aria-label="Scroll left"><i class="fas fa-chevron-left"></i></button>
+                            <div class="row-scroll"></div>
+                            <button class="row-nav right" aria-label="Scroll right"><i class="fas fa-chevron-right"></i></button>
+                        </div>
+                    </div>
+                    <div id="genre-rows-container"></div>
                 </div>
             </section>
 
@@ -466,10 +499,44 @@
         </div>
     </div>
 
+    <!-- Player Overlay -->
+    <div class="player-overlay" id="player-overlay">
+        <div class="player-header">
+            <button class="player-back"><i class="fas fa-arrow-left"></i></button>
+            <div class="player-title"></div>
+            <div class="player-source-select">
+                <select id="ov-source-select"></select>
+            </div>
+        </div>
+        <div class="player-area">
+            <div class="player-loading">
+                <div class="loader-cinema">
+                    <div class="cinema-orbs">
+                        <div class="cinema-orb orb-1"></div>
+                        <div class="cinema-orb orb-2"></div>
+                        <div class="cinema-orb orb-3"></div>
+                    </div>
+                    <div class="cinema-icon"><i class="fas fa-play"></i></div>
+                    <div class="cinema-ripple"></div>
+                    <div class="cinema-ripple ripple-2"></div>
+                </div>
+                <p class="loader-status" id="loader-status">Connecting to servers...</p>
+                <div class="loader-sources" id="loader-sources"></div>
+                <div class="loader-bar"><div class="loader-bar-fill" id="loader-bar-fill"></div></div>
+            </div>
+            <iframe id="ov-player-iframe" allowfullscreen allow="autoplay; encrypted-media; fullscreen; picture-in-picture"></iframe>
+            <video id="ov-player-video" controls preload="auto" playsinline crossorigin="anonymous"></video>
+        </div>
+        <div class="episode-bar" style="display:none">
+            <div class="season-tabs"></div>
+            <div class="episode-list"></div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
-    <script src="/js/api.js?v=12"></script>
-    <script src="/js/player.js?v=18"></script>
-    <script src="/js/app.js?v=21"></script>
+    <script src="/js/api.js?v=13"></script>
+    <script src="/js/player.js?v=19"></script>
+    <script src="/js/app.js?v=23"></script>
 
     <!-- Security: Disable right-click, DevTools, source viewing, copy -->
     <script>

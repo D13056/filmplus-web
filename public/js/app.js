@@ -92,8 +92,8 @@ const App = {
                 this.loadDetail('tv', parts[1]);
                 break;
             case 'watch':
-                this.showPage('watch');
-                this.loadWatch(parts[1], parts[2], parts[3], parts[4]);
+                // Use overlay player instead of watch page
+                this._openOverlayPlayer(parts[1], parts[2], parts[3], parts[4]);
                 break;
             case 'favorites':
                 this.showPage('favorites');
@@ -365,13 +365,18 @@ const App = {
         });
 
         try {
-            const [trendingMovies, trendingTV, popMovies, popTV, topMovies, topTV] = await Promise.all([
+            const [trendingMovies, trendingTV, popMovies, popTV, topMovies, topTV,
+                   nowPlaying, airingToday, upcoming, onTheAir] = await Promise.all([
                 API.getTrending('movie', 'week'),
                 API.getTrending('tv', 'week'),
                 API.getPopular('movie'),
                 API.getPopular('tv'),
                 API.getTopRated('movie'),
-                API.getTopRated('tv')
+                API.getTopRated('tv'),
+                API.getNowPlaying().catch(() => ({ results: [] })),
+                API.getAiringToday().catch(() => ({ results: [] })),
+                API.getUpcoming().catch(() => ({ results: [] })),
+                API.getOnTheAir().catch(() => ({ results: [] }))
             ]);
 
             // Hero Banner
@@ -387,16 +392,64 @@ const App = {
             this.renderRow('popular-tv', popTV.results, 'tv');
             this.renderRow('toprated-movies', topMovies.results, 'movie');
             this.renderRow('toprated-tv', topTV.results, 'tv');
+            this.renderRow('now-playing', nowPlaying.results, 'movie');
+            this.renderRow('airing-today', airingToday.results, 'tv');
+            this.renderRow('upcoming-movies', upcoming.results, 'movie');
+            this.renderRow('on-the-air', onTheAir.results, 'tv');
 
             // Load continue watching section
             this.loadContinueWatching();
 
             // Init row scroll navigation arrows
             this.initRowNavButtons();
+
+            // Load genre discovery rows (async, won't block home)
+            this._loadGenreRows();
         } catch (e) {
             console.error('Failed to load home:', e);
             this.showToast('Failed to load content', 'error');
         }
+    },
+
+    /* Genre discovery rows — loaded after main sections */
+    _HOME_GENRES: [
+        { id: 28, name: 'Action', type: 'movie' },
+        { id: 35, name: 'Comedy', type: 'movie' },
+        { id: 18, name: 'Drama', type: 'movie' },
+        { id: 27, name: 'Horror', type: 'movie' },
+        { id: 878, name: 'Sci-Fi', type: 'movie' },
+        { id: 10749, name: 'Romance', type: 'movie' },
+        { id: 16, name: 'Animation', type: 'movie' },
+        { id: 10765, name: 'Sci-Fi & Fantasy', type: 'tv' },
+        { id: 80, name: 'Crime', type: 'tv' },
+        { id: 10759, name: 'Action & Adventure', type: 'tv' }
+    ],
+
+    async _loadGenreRows() {
+        const container = document.getElementById('genre-rows-container');
+        if (!container) return;
+
+        // Build skeleton HTML for all genre rows
+        container.innerHTML = this._HOME_GENRES.map(g => `
+            <div class="content-row" id="genre-${g.type}-${g.id}">
+                <div class="row-header"><h2>${g.name} ${g.type === 'movie' ? 'Movies' : 'TV Shows'}</h2></div>
+                <div class="row-scroll-wrap">
+                    <button class="row-nav left hidden" aria-label="Scroll left"><i class="fas fa-chevron-left"></i></button>
+                    <div class="row-scroll">${this.createSkeletons(8)}</div>
+                    <button class="row-nav right" aria-label="Scroll right"><i class="fas fa-chevron-right"></i></button>
+                </div>
+            </div>
+        `).join('');
+
+        // Load all genre rows in parallel
+        const promises = this._HOME_GENRES.map(async g => {
+            try {
+                const data = await API.discover(g.type, { genre: g.id, sort_by: 'popularity.desc' });
+                if (data?.results) this.renderRow(`genre-${g.type}-${g.id}`, data.results, g.type);
+            } catch (e) { console.error(`Genre ${g.name} error:`, e); }
+        });
+        await Promise.allSettled(promises);
+        this.initRowNavButtons();
     },
 
     // ─── Row Scroll Navigation ───
@@ -871,7 +924,36 @@ const App = {
         }
     },
 
-    // ─── Watch Page ───
+    // ─── Overlay Player Launcher ───
+    async _openOverlayPlayer(type, tmdbId, season, episode) {
+        try {
+            const detail = type === 'movie'
+                ? await API.getMovieDetail(tmdbId)
+                : await API.getTVDetail(tmdbId);
+
+            Player.play(
+                type, tmdbId, detail,
+                type === 'tv' ? parseInt(season) || 1 : null,
+                type === 'tv' ? parseInt(episode) || 1 : null
+            );
+
+            // Add to history
+            this.addToHistory({
+                id: detail.id,
+                type,
+                title: detail.title || detail.name,
+                poster_path: detail.poster_path,
+                backdrop_path: detail.backdrop_path,
+                season, episode,
+                timestamp: Date.now()
+            });
+        } catch (e) {
+            console.error('Failed to open player:', e);
+            this.showToast('Failed to load content', 'error');
+        }
+    },
+
+    // ─── Watch Page (legacy) ───
     async loadWatch(type, tmdbId, season, episode) {
         this.watchState = { tmdbId, type, season: parseInt(season) || 1, episode: parseInt(episode) || 1, detail: null };
         this._extractionFailed = false;

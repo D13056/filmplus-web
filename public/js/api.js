@@ -181,5 +181,59 @@ const API = {
     // ─── Keys Info ───
     async getKeysInfo() {
         return this._fetch('/api/keys-info');
+    },
+
+    // ─── Subtitle Fallback (Stremio OpenSubtitles) ───
+    async fetchSubtitles(type, imdbId, season, episode) {
+        if (!imdbId) return { subtitles: [] };
+        let url = `/api/subtitles-stremio/${type === 'tv' ? 'series' : 'movie'}/${imdbId}`;
+        if (type === 'tv') url += `?season=${season || 1}&episode=${episode || 1}`;
+        return this._fetch(url, { timeout: 10000 });
+    },
+
+    // ─── Position Memory (localStorage) ───
+    _POS_KEY: 'filmplus_positions',
+
+    _getPositions() {
+        try { return JSON.parse(localStorage.getItem(this._POS_KEY) || '{}'); } catch { return {}; }
+    },
+
+    savePosition(type, id, season, episode, time) {
+        const data = this._getPositions();
+        const k = type === 'tv' ? `${type}-${id}-${season}-${episode}` : `${type}-${id}`;
+        data[k] = { time, saved: Date.now() };
+        const keys = Object.keys(data);
+        if (keys.length > 200) {
+            const sorted = keys.sort((a, b) => (data[a].saved || 0) - (data[b].saved || 0));
+            sorted.slice(0, keys.length - 200).forEach(k => delete data[k]);
+        }
+        localStorage.setItem(this._POS_KEY, JSON.stringify(data));
+    },
+
+    getPosition(type, id, season, episode) {
+        const data = this._getPositions();
+        const k = type === 'tv' ? `${type}-${id}-${season}-${episode}` : `${type}-${id}`;
+        return data[k]?.time || 0;
+    },
+
+    // ─── Continue Watching (localStorage) ───
+    _CW_KEY: 'fp_continueWatching',
+
+    getContinueWatching() {
+        try { return JSON.parse(localStorage.getItem(this._CW_KEY) || '[]'); } catch { return []; }
+    },
+
+    updateContinueWatching(item) {
+        let list = this.getContinueWatching();
+        list = list.filter(i => !(i.id == item.id && i.type === item.type &&
+            i.season == item.season && i.episode == item.episode));
+        list.unshift(item);
+        localStorage.setItem(this._CW_KEY, JSON.stringify(list.slice(0, 30)));
+    },
+
+    removeContinueWatching(id) {
+        let list = this.getContinueWatching();
+        list = list.filter(i => i.id != id);
+        localStorage.setItem(this._CW_KEY, JSON.stringify(list));
     }
 };

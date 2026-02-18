@@ -1,284 +1,347 @@
-/* ═══════════════════════════════════════════════════════════
-   FilmPlus Web - Player Module v2
-   Video player with HLS, loading overlay, quality UI,
-   subtitle sync, prebuffering & position memory
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════
+   FilmPlus Web — Player Module (HDOBox-style)
+   Direct HLS extraction + iframe embed fallback
+   Full-screen overlay player with source preloading
+   ═══════════════════════════════════════════════════ */
 
-const Player = {
-    iframe: null,
-    video: null,
-    hls: null,
-    currentSubs: [],
-    _savedPosition: 0,
-    _subtitleOffset: 0,
-    _subtitleFontSize: 100,
-    _subtitleBg: 'rgba(0,0,0,0.75)',
-    _playbackSpeed: 1,
-    _speeds: [0.5, 0.75, 1, 1.25, 1.5, 2],
-    _preferredHeight: 720, // Default to 720p
+const Player = (() => {
 
-    init() {
-        this.iframe = document.getElementById('player-iframe');
-        this.video = document.getElementById('player-video');
-        this._initSubtitleControls();
-        this._initExtraControls();
-        this._initKeyboardControls();
-    },
+    /* ── State ── */
+    let currentType = null;
+    let currentId = null;
+    let currentSeason = null;
+    let currentEpisode = null;
+    let currentTitle = '';
+    let currentDetail = null;
+    let currentProvider = null;
+    let currentImdbId = null;
+    let sources = [];
+    let hls = null;
+    let positionInterval = null;
+    let resumed = false;
+    let sessionGen = 0;
 
-    // ─── Keyboard Controls (arrows, space, F for fullscreen) ───
+    /* Preloaded stream cache */
+    const preloadedStreams = new Map();
 
-    _initKeyboardControls() {
+    /* ── DOM refs ── */
+    const overlay     = document.getElementById('player-overlay');
+    const iframe      = document.getElementById('ov-player-iframe');
+    const video       = document.getElementById('ov-player-video');
+    const sourceSelect= document.getElementById('ov-source-select');
+    const titleEl     = document.querySelector('.player-title');
+    const loading     = document.querySelector('.player-loading');
+    const loaderStatus= document.getElementById('loader-status');
+    const loaderSources = document.getElementById('loader-sources');
+    const loaderBarFill = document.getElementById('loader-bar-fill');
+    const seasonTabs  = document.querySelector('.season-tabs');
+    const episodeList = document.querySelector('.episode-list');
+    const episodeBar  = document.querySelector('.episode-bar');
+
+    /* ── Init ── */
+
+    async function init() {
+        try {
+            const rawSources = await API.getSources();
+            // Filter out API-only sources (MorphTV, TeaTV etc.) — they need special handling
+            sources = rawSources.filter(s => !s.apiOnly);
+        } catch (err) {
+            console.warn('Failed to load sources:', err);
+            sources = [];
+        }
+        buildSourceSelect();
+        sourceSelect.addEventListener('change', onSourceChange);
+        document.querySelector('.player-back').addEventListener('click', close);
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape' && overlay.classList.contains('active')) close();
+        });
+        initKeyboardControls();
+    }
+
+    function buildSourceSelect() {
+        sourceSelect.innerHTML = '';
+        sources.forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = s.name + (s.quality ? ` (${s.quality})` : '');
+            sourceSelect.appendChild(opt);
+        });
+    }
+
+    /* ── Keyboard Controls ── */
+
+    function initKeyboardControls() {
         document.addEventListener('keydown', (e) => {
-            // Only handle when video is visible and not typing in an input
+            if (!overlay.classList.contains('active')) return;
             const tag = e.target.tagName.toLowerCase();
             if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-            if (!this.video || this.video.classList.contains('hidden')) return;
+            if (video.style.display === 'none') return;
 
             switch (e.code) {
                 case 'Space':
                     e.preventDefault();
-                    if (this.video.paused) this.video.play().catch(() => {});
-                    else this.video.pause();
+                    if (video.paused) video.play().catch(() => {});
+                    else video.pause();
                     break;
                 case 'ArrowLeft':
                     e.preventDefault();
-                    this.video.currentTime = Math.max(0, this.video.currentTime - 10);
-                    this._showSeekIndicator('-10s');
+                    video.currentTime = Math.max(0, video.currentTime - 10);
                     break;
                 case 'ArrowRight':
                     e.preventDefault();
-                    this.video.currentTime = Math.min(this.video.duration || Infinity, this.video.currentTime + 10);
-                    this._showSeekIndicator('+10s');
+                    video.currentTime = Math.min(video.duration || Infinity, video.currentTime + 10);
                     break;
                 case 'ArrowUp':
                     e.preventDefault();
-                    this.video.volume = Math.min(1, this.video.volume + 0.1);
+                    video.volume = Math.min(1, video.volume + 0.1);
                     break;
                 case 'ArrowDown':
                     e.preventDefault();
-                    this.video.volume = Math.max(0, this.video.volume - 0.1);
+                    video.volume = Math.max(0, video.volume - 0.1);
                     break;
                 case 'KeyF':
                     e.preventDefault();
                     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-                    else this.video.requestFullscreen().catch(() => {});
+                    else video.requestFullscreen().catch(() => {});
                     break;
                 case 'KeyM':
                     e.preventDefault();
-                    this.video.muted = !this.video.muted;
+                    video.muted = !video.muted;
                     break;
             }
         });
-    },
+    }
 
-    _showSeekIndicator(text) {
-        let indicator = document.getElementById('seek-indicator');
-        if (!indicator) {
-            indicator = document.createElement('div');
-            indicator.id = 'seek-indicator';
-            indicator.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.7);color:#fff;padding:10px 20px;border-radius:8px;font-size:1.4rem;font-weight:600;pointer-events:none;z-index:1000;transition:opacity 0.3s;';
-            const playerArea = document.getElementById('player-area');
-            if (playerArea) playerArea.appendChild(indicator);
+    /* ── Open Player ── */
+
+    async function play(type, id, detail, season, episode) {
+        const gen = ++sessionGen;
+
+        currentType = type;
+        currentId = id;
+        currentDetail = detail;
+        currentImdbId = detail.imdb_id || detail.external_ids?.imdb_id || null;
+        currentSeason = season || null;
+        currentEpisode = episode || null;
+        resumed = false;
+        preloadedStreams.clear();
+        destroyHLS();
+        hideAllPlayers();
+
+        currentTitle = detail.title || detail.name || '';
+        if (type === 'tv' && season && episode) {
+            currentTitle += ` S${season}E${episode}`;
         }
-        indicator.textContent = text;
-        indicator.style.opacity = '1';
-        clearTimeout(this._seekIndicatorTimer);
-        this._seekIndicatorTimer = setTimeout(() => { indicator.style.opacity = '0'; }, 800);
-    },
+        titleEl.textContent = currentTitle;
 
-    // ─── Extra Player Controls (skip, speed, PIP) ───
+        overlay.classList.add('active');
+        document.body.style.overflow = 'hidden';
 
-    _initExtraControls() {
-        // Skip back 10s
-        document.getElementById('skip-back-btn')?.addEventListener('click', () => {
-            if (this.video && !this.video.classList.contains('hidden')) {
-                this.video.currentTime = Math.max(0, this.video.currentTime - 10);
-            }
-        });
-        // Skip forward 30s
-        document.getElementById('skip-forward-btn')?.addEventListener('click', () => {
-            if (this.video && !this.video.classList.contains('hidden')) {
-                this.video.currentTime = Math.min(this.video.duration || Infinity, this.video.currentTime + 30);
-            }
-        });
-        // Playback speed cycle
-        document.getElementById('speed-btn')?.addEventListener('click', () => {
-            if (this.video && !this.video.classList.contains('hidden')) {
-                const idx = this._speeds.indexOf(this._playbackSpeed);
-                this._playbackSpeed = this._speeds[(idx + 1) % this._speeds.length];
-                this.video.playbackRate = this._playbackSpeed;
-                document.getElementById('speed-label').textContent = this._playbackSpeed + 'x';
-            }
-        });
-        // Picture-in-Picture
-        document.getElementById('pip-btn')?.addEventListener('click', () => {
-            if (this.video && !this.video.classList.contains('hidden')) {
-                if (document.pictureInPictureElement) {
-                    document.exitPictureInPicture().catch(() => {});
-                } else {
-                    this.video.requestPictureInPicture().catch(() => {});
-                }
-            }
-        });
-    },
-
-    // ─── Loading Overlay ───
-
-    showLoading(status, stage) {
-        const overlay = document.getElementById('player-loading-overlay');
-        if (!overlay) return;
-        overlay.classList.remove('hidden', 'fade-out');
-        if (status) document.getElementById('loading-status').textContent = status;
-        if (stage) document.getElementById('loading-stage').textContent = stage;
-        this._setLoadingProgress(0);
-    },
-
-    updateLoading(status, stage, progress) {
-        const overlay = document.getElementById('player-loading-overlay');
-        if (!overlay || overlay.classList.contains('hidden')) return;
-        if (status) document.getElementById('loading-status').textContent = status;
-        if (stage) document.getElementById('loading-stage').textContent = stage;
-        if (progress !== undefined) this._setLoadingProgress(progress);
-    },
-
-    hideLoading() {
-        const overlay = document.getElementById('player-loading-overlay');
-        if (!overlay) return;
-        this._setLoadingProgress(100);
-        overlay.classList.add('fade-out');
-        setTimeout(() => {
-            overlay.classList.add('hidden');
-            overlay.classList.remove('fade-out');
-        }, 500);
-    },
-
-    _setLoadingProgress(pct) {
-        const bar = document.getElementById('loading-progress-bar');
-        if (bar) bar.style.width = Math.min(pct, 100) + '%';
-    },
-
-    // ─── Position Memory ───
-
-    savePosition() {
-        if (this.video && this.video.currentTime > 1 && !this.video.ended) {
-            this._savedPosition = this.video.currentTime;
-        }
-    },
-
-    restorePosition() {
-        if (this._savedPosition > 1 && this.video) {
-            const pos = this._savedPosition;
-            this._savedPosition = 0; // Clear after using to prevent double-seek
-            const restore = () => {
-                if (this.video && this.video.duration && pos < this.video.duration - 5) {
-                    this.video.currentTime = pos;
-                    console.log(`[Player] Resumed at ${Math.floor(pos)}s / ${Math.floor(this.video.duration)}s`);
-                }
-            };
-            // Try immediately, and also on loadedmetadata/canplay as fallback
-            if (this.video.readyState >= 1 && this.video.duration) {
-                restore();
-            } else {
-                this.video.addEventListener('loadedmetadata', restore, { once: true });
-                // Extra safety: also try on canplay in case loadedmetadata already fired
-                this.video.addEventListener('canplay', () => {
-                    if (this.video && this.video.currentTime < 2 && pos > 30) {
-                        restore();
-                    }
-                }, { once: true });
-            }
-        }
-    },
-
-    clearSavedPosition() {
-        this._savedPosition = 0;
-    },
-
-    // ─── Play Methods ───
-
-    playEmbed(url) {
-        this.savePosition();
-        this.stopVideo();
-        this.iframe.style.display = 'block';
-        this.video.classList.add('hidden');
-        this.iframe.src = url || '';
-        this.hideLoading();
-        // Hide quality selector for embed mode
-        const qs = document.querySelector('.quality-selector');
-        if (qs) qs.style.display = 'none';
-    },
-
-    playDirect(url) {
-        this.savePosition();
-        this.iframe.style.display = 'none';
-        this.video.classList.remove('hidden');
-        this.clearSubtitleTracks();
-        if (url.includes('.m3u8') || url.includes('stream-proxy')) {
-            this.playHLS(url);
+        // Show episode bar for TV
+        if (type === 'tv') {
+            episodeBar.style.display = '';
+            buildSeasonTabs(detail, season);
+            buildEpisodeList(detail, season, episode);
         } else {
-            this.stopHLS();
-            this.video.src = url;
-            this.video.play().catch(() => {});
-            this.restorePosition();
-            this.hideLoading();
+            episodeBar.style.display = 'none';
         }
-    },
 
-    playHLSUrl(url) {
-        this.savePosition();
-        this.iframe.style.display = 'none';
-        this.video.classList.remove('hidden');
-        this.clearSubtitleTracks();
-        this.playHLS(url);
-    },
+        // Load first source and preload all
+        currentProvider = sourceSelect.value;
+        loadSource(currentProvider, gen).catch(e => console.warn('loadSource unhandled:', e));
+        preloadAllSources(gen).catch(e => console.warn('preloadAllSources unhandled:', e));
+    }
 
-    playHLS(url) {
-        this.stopHLS();
+    /* ── Preload all sources in parallel ── */
+
+    async function preloadAllSources(gen) {
+        buildLoaderSources();
+        let done = 0;
+        let readyCount = 0;
+        const total = sources.length;
+
+        const promises = sources.map(async (s) => {
+            if (gen !== sessionGen) return;
+            setSourceStatus(s.id, 'testing');
+            try {
+                const stream = await API.extractStream(
+                    currentId, currentType,
+                    currentSeason, currentEpisode,
+                    s.id
+                );
+                if (gen !== sessionGen) return;
+                preloadedStreams.set(s.id, stream);
+                if (stream.success) {
+                    setSourceStatus(s.id, 'ready');
+                    readyCount++;
+                } else {
+                    setSourceStatus(s.id, 'failed');
+                }
+            } catch {
+                if (gen !== sessionGen) return;
+                preloadedStreams.set(s.id, { success: false });
+                setSourceStatus(s.id, 'failed');
+            }
+            done++;
+            if (gen === sessionGen) {
+                updateLoaderUI(
+                    readyCount > 0 ? `${readyCount} source${readyCount > 1 ? 's' : ''} ready` : `Testing sources... (${done}/${total})`,
+                    (done / total) * 100
+                );
+            }
+        });
+        await Promise.allSettled(promises);
+        if (gen === sessionGen && readyCount === 0) {
+            updateLoaderUI('No sources available', 100);
+        }
+    }
+
+    /* ── Load a Source ── */
+
+    async function loadSource(provider, gen) {
+        if (gen !== undefined && gen !== sessionGen) return;
+        showLoading(true);
+        destroyHLS();
+        hideAllPlayers();
+        currentProvider = provider;
+        updateLoaderUI('Extracting stream...', 20);
+
+        try {
+            let data = preloadedStreams.get(provider);
+            if (!data) {
+                updateLoaderUI('Fetching stream URL...', 40);
+                data = await API.extractStream(
+                    currentId, currentType,
+                    currentSeason, currentEpisode,
+                    provider
+                );
+            }
+
+            if (gen !== undefined && gen !== sessionGen) return;
+
+            if (data.success && data.hlsUrl) {
+                updateLoaderUI('Buffering video...', 80);
+                playHLS(data.hlsUrl);
+                if (data.subtitles?.length) {
+                    addSubtitles(data.subtitles);
+                } else {
+                    loadFallbackSubtitles().catch(() => {});
+                }
+            } else if (data.success && data.isEmbed && data.embedUrl) {
+                updateLoaderUI('Loading player...', 70);
+                iframe.src = data.embedUrl;
+                iframe.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+                iframe.setAttribute('referrerpolicy', 'origin');
+                iframe.style.display = 'block';
+                iframe.onload = () => showLoading(false);
+                iframe.onerror = () => showLoading(false);
+                setTimeout(() => showLoading(false), 8000);
+            } else {
+                const fallback = findNextWorkingSource(provider);
+                if (fallback) {
+                    console.log(`Source "${provider}" failed, auto-switching to "${fallback}"`);
+                    sourceSelect.value = fallback;
+                    return loadSource(fallback, gen);
+                }
+                showLoading(false);
+                App.showToast(data.error ? 'Source unavailable — try another' : 'Source not available — try another');
+            }
+        } catch (err) {
+            if (gen !== undefined && gen !== sessionGen) return;
+            console.error('loadSource error:', err);
+            const fallback = findNextWorkingSource(provider);
+            if (fallback) {
+                console.log(`Source "${provider}" error, auto-switching to "${fallback}"`);
+                sourceSelect.value = fallback;
+                return loadSource(fallback, gen);
+            }
+            showLoading(false);
+            App.showToast('Failed to load source — try another');
+        }
+    }
+
+    /* ── Find next working preloaded source ── */
+    function findNextWorkingSource(failedProvider) {
+        for (const s of sources) {
+            if (s.id === failedProvider) continue;
+            const cached = preloadedStreams.get(s.id);
+            if (cached && cached.success) return s.id;
+        }
+        return null;
+    }
+
+    /* ── Subtitle handling ── */
+
+    function addSubtitles(subs) {
+        clearSubtitles();
+        subs.forEach((sub, i) => {
+            const track = document.createElement('track');
+            track.kind = 'subtitles';
+            track.label = sub.label || sub.lang || 'Sub';
+            track.srclang = sub.lang || 'en';
+            track.src = sub.url;
+            if (i === 0) track.default = true;
+            video.appendChild(track);
+        });
+    }
+
+    function clearSubtitles() {
+        video.querySelectorAll('track').forEach(t => t.remove());
+    }
+
+    /* ── Subtitle Fallback (Stremio OpenSubtitles) ── */
+
+    async function loadFallbackSubtitles() {
+        if (!currentImdbId) return;
+        try {
+            const data = await API.fetchSubtitles(currentType, currentImdbId, currentSeason, currentEpisode);
+            if (data.subtitles?.length) {
+                addSubtitles(data.subtitles.slice(0, 8));
+            }
+        } catch (e) {
+            // Silently ignore
+        }
+    }
+
+    /* ── HLS Playback (direct streams) ── */
+
+    function playHLS(url) {
+        destroyHLS();
+        hideAllPlayers();
+        video.style.display = 'block';
+        showLoading(true);
+
+        let loadingHidden = false;
+        function hideLoadingOnce() {
+            if (loadingHidden) return;
+            loadingHidden = true;
+            showLoading(false);
+        }
+
         if (Hls.isSupported()) {
-            this.hls = new Hls({
-                // ═══ OPTIMIZED HLS.js v1.5 CONFIG ═══
-                //
-                // Tuned based on HLS.js API docs & real-world testing:
-                // 1. Correct modern LoadPolicy (fragLoading* is DEPRECATED)
-                // 2. Conservative initial bandwidth → fast ramp-up
-                // 3. Proper EWMA half-lives for stable quality switching
-                // 4. GPU-friendly buffer management
-
-                startLevel: -1,                // Will be overridden to 720p after manifest parsed
-
-                // ─── Buffer Management ───
-                maxBufferLength: 30,           // Buffer 30s ahead (HLS.js default, proven stable)
-                maxMaxBufferLength: 600,       // Allow growing to 10min on fast connections (default)
-                maxBufferSize: 120 * 1000 * 1000, // 120MB buffer pool (safe for mobile)
-                maxBufferHole: 0.1,            // Tight hole tolerance (default 0.1) — less stutter
-                backBufferLength: 30,          // Keep 30s behind playhead
-
-                // ─── Bandwidth Estimation (conservative start, eager upgrade) ───
-                abrEwmaDefaultEstimate: 800000,   // Start at 800Kbps (safe, ramps up in ~2 segments)
-                abrBandWidthUpFactor: 0.7,        // Upgrade when 70% confident (HLS.js default)
-                abrBandWidthFactor: 0.95,         // Downgrade reluctantly (keep quality stable)
-                abrEwmaFastLive: 3.0,             // Default half-life for fast EWMA
-                abrEwmaSlowLive: 9.0,             // Default half-life for slow EWMA
-                abrEwmaFastVoD: 3.0,              // Default — smooth quality transitions
-                abrEwmaSlowVoD: 9.0,              // Default — prevents oscillation
-                abrMaxWithRealBitrate: true,       // Use actual bitrate for ABR decisions
-
-                // ─── Modern Load Policy (replaces deprecated fragLoading* settings) ──
+            hls = new Hls({
+                maxBufferLength: 30,
+                maxMaxBufferLength: 600,
+                maxBufferSize: 120 * 1000 * 1000,
+                maxBufferHole: 0.1,
+                startLevel: -1,
+                capLevelToPlayerSize: true,
+                capLevelOnFPSDrop: true,
+                progressive: true,
+                lowLatencyMode: false,
+                backBufferLength: 30,
+                enableWorker: true,
+                startFragPrefetch: true,
+                abrEwmaDefaultEstimate: 800000,
+                abrBandWidthUpFactor: 0.7,
+                abrBandWidthFactor: 0.95,
+                abrMaxWithRealBitrate: true,
                 fragLoadPolicy: {
                     default: {
-                        maxTimeToFirstByteMs: 8000,    // 8s to first byte
-                        maxLoadTimeMs: 20000,          // 20s max per fragment
-                        timeoutRetry: {
-                            maxNumRetry: 4,
-                            retryDelayMs: 500,
-                            maxRetryDelayMs: 8000
-                        },
-                        errorRetry: {
-                            maxNumRetry: 8,            // 8 retries on network errors
-                            retryDelayMs: 200,         // Start fast at 200ms
-                            maxRetryDelayMs: 8000,     // Max 8s between retries
-                            backoff: 'exponential'
-                        }
+                        maxTimeToFirstByteMs: 8000,
+                        maxLoadTimeMs: 20000,
+                        timeoutRetry: { maxNumRetry: 4, retryDelayMs: 500, maxRetryDelayMs: 8000 },
+                        errorRetry: { maxNumRetry: 8, retryDelayMs: 200, maxRetryDelayMs: 8000, backoff: 'exponential' }
                     }
                 },
                 manifestLoadPolicy: {
@@ -288,414 +351,294 @@ const Player = {
                         timeoutRetry: { maxNumRetry: 4, retryDelayMs: 500, maxRetryDelayMs: 4000 },
                         errorRetry: { maxNumRetry: 6, retryDelayMs: 500, maxRetryDelayMs: 8000, backoff: 'exponential' }
                     }
-                },
-
-                // ─── Prefetch & Worker ──
-                enableWorker: true,            // Offload demuxing to web worker
-                lowLatencyMode: false,
-                progressive: true,             // Stream while downloading segments
-                startPosition: -1,
-                testBandwidth: true,
-                startFragPrefetch: true,       // Prefetch next segment during m3u8 parse
-                highBufferWatchdogPeriod: 2,   // Check buffer health every 2s
-
-                // ─── Quality & Recovery ──
-                capLevelToPlayerSize: true,     // Don't waste bandwidth on resolution > player size
-                capLevelOnFPSDrop: true,        // Auto-drop quality if frames are being dropped
-                stretchShortVideoTrack: true,   // Prevent A/V desync on short segments
-                nudgeOffset: 0.1,              // Small nudge on stall (default)
-                nudgeMaxRetry: 5,              // Standard nudge retries
-                appendErrorMaxRetry: 5,        // Retry on SourceBuffer append errors
+                }
             });
 
-            this.updateLoading('Preparing your stream', 'CONNECTING TO HD SERVER', 20);
+            hls.loadSource(url);
+            hls.attachMedia(video);
 
-            this.hls.loadSource(url);
-            this.hls.attachMedia(this.video);
-
-            this.hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
-                this.updateLoading('Stream ready', 'PREPARING HD PLAYBACK', 70);
-                this._populateQualitySelector(data.levels);
-                // Force 720p as default quality
-                this._setPreferred720p(data.levels);
-                this.video.play().catch(() => {});
-                this.restorePosition();
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                updateLoaderUI('Buffering video...', 90);
+                resumePosition();
+                video.play().catch(() => {});
             });
 
-            this.hls.on(Hls.Events.FRAG_BUFFERED, () => {
-                this.updateLoading('Almost ready', 'OPTIMIZING QUALITY', 85);
-                // Reset network retry counter on successful fragment
-                this._networkRetries = 0;
-            });
-
-            // Hide overlay once video starts playing
-            const onPlaying = () => {
-                this.updateLoading('Enjoy your movie', 'NOW PLAYING IN HD', 100);
-                this.hideLoading();
-                this.video.removeEventListener('playing', onPlaying);
-            };
-            this.video.addEventListener('playing', onPlaying);
-
-            // Also hide on canplay as safety net
-            this.video.addEventListener('canplay', () => {
-                this.hideLoading();
+            video.addEventListener('playing', hideLoadingOnce, { once: true });
+            video.addEventListener('canplay', () => {
+                setTimeout(hideLoadingOnce, 500);
             }, { once: true });
+            setTimeout(hideLoadingOnce, 10000);
 
-            this.hls.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
-                this._updateCurrentQuality(data.level);
-            });
-
-            this.hls.on(Hls.Events.ERROR, (event, data) => {
+            // Network retry with exponential backoff
+            let networkRetries = 0;
+            hls.on(Hls.Events.ERROR, (_, data) => {
                 if (data.fatal) {
-                    console.error('HLS Fatal Error:', data.type, data.details);
+                    console.error('HLS fatal error:', data);
                     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                        // UC-Style exponential backoff retry for fatal network errors
-                        this._networkRetries = (this._networkRetries || 0) + 1;
-                        if (this._networkRetries <= 8) {
-                            const delay = Math.min(500 * Math.pow(1.5, this._networkRetries - 1), 8000);
-                            console.warn(`[HLS] Fatal network error, retry #${this._networkRetries} in ${delay}ms`);
-                            this.updateLoading('Reconnecting', `RETRY ${this._networkRetries}/8`, 30);
-                            setTimeout(() => { if (this.hls) this.hls.startLoad(); }, delay);
+                        networkRetries++;
+                        if (networkRetries <= 8) {
+                            const delay = Math.min(500 * Math.pow(1.5, networkRetries - 1), 8000);
+                            console.warn(`[HLS] Fatal network error, retry #${networkRetries} in ${delay}ms`);
+                            setTimeout(() => { if (hls) hls.startLoad(); }, delay);
                         } else {
-                            console.error('[HLS] Max network retries exceeded');
-                            this.hideLoading();
+                            hideLoadingOnce();
+                            App.showToast('Stream error — try another source');
                         }
                     } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-                        console.warn('HLS media error, attempting recovery...');
-                        this.hls.recoverMediaError();
+                        hls.recoverMediaError();
                     } else {
-                        this.hideLoading();
-                        this.stopHLS();
+                        hideLoadingOnce();
+                        App.showToast('Stream error — try another source');
                     }
                 } else if (data.details === 'bufferStalledError') {
-                    // UC-Style stall recovery: drop quality immediately for fastest recovery
-                    console.warn('Buffer stalled, UC-style aggressive recovery...');
-                    if (this.hls) {
-                        const currentLevel = this.hls.currentLevel;
+                    // Stall recovery: drop quality
+                    if (hls) {
+                        const currentLevel = hls.currentLevel;
                         if (currentLevel > 0) {
-                            this.hls.currentLevel = 0; // Drop to lowest quality instantly
-                            // Restore auto quality after buffer recovers
-                            setTimeout(() => { if (this.hls) this.hls.currentLevel = -1; }, 6000);
+                            hls.currentLevel = 0;
+                            setTimeout(() => { if (hls) hls.currentLevel = -1; }, 6000);
                         }
-                        this.hls.startLoad(this.video.currentTime);
+                        hls.startLoad(video.currentTime);
                     }
                 }
             });
 
-            // UC-Style freeze recovery: if video stalls for 1.5s while not paused, force reload
-            // (UC uses bad_conn_time_ms_threshold for detecting bad connections)
-            this._stallTimer = null;
-            this._stallCount = 0;
-            this.video.addEventListener('waiting', () => {
-                if (!this.video.paused && this.hls) {
-                    this._stallTimer = setTimeout(() => {
-                        this._stallCount++;
-                        console.warn(`Stall recovery #${this._stallCount}: forcing quality drop + reload`);
-                        if (this.hls) {
-                            // Progressive quality drop based on stall frequency
-                            if (this._stallCount >= 3) {
-                                // Multiple stalls — lock to lowest quality
-                                this.hls.currentLevel = 0;
-                                this.hls.startLoad(this.video.currentTime);
-                                // Unlock after longer period
-                                setTimeout(() => { if (this.hls) this.hls.currentLevel = -1; this._stallCount = 0; }, 15000);
-                            } else {
-                                // Drop one level
-                                const level = this.hls.currentLevel;
-                                if (level > 0) this.hls.currentLevel = Math.max(0, level - 1);
-                                this.hls.startLoad(this.video.currentTime);
-                                setTimeout(() => { if (this.hls) this.hls.currentLevel = -1; }, 6000);
-                            }
-                        }
-                    }, 1500); // 1.5s stall threshold (was 2s)
-                }
-            });
-            this.video.addEventListener('playing', () => {
-                if (this._stallTimer) { clearTimeout(this._stallTimer); this._stallTimer = null; }
-            });
-        } else if (this.video.canPlayType('application/vnd.apple.mpegurl')) {
-            this.video.src = url;
-            this.video.play().catch(() => {});
-            this.restorePosition();
-            this.hideLoading();
-            // Show quality selector in non-HLS too
-            const qs = document.querySelector('.quality-selector');
-            if (qs) qs.style.display = 'none';
+            // Reset retry counter on successful fragment
+            hls.on(Hls.Events.FRAG_BUFFERED, () => { networkRetries = 0; });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = url;
+            video.addEventListener('playing', hideLoadingOnce, { once: true });
+            video.addEventListener('loadedmetadata', () => {
+                resumePosition();
+                video.play().catch(() => {});
+            }, { once: true });
+            setTimeout(hideLoadingOnce, 10000);
+        } else {
+            showLoading(false);
+            App.showToast('HLS not supported in this browser');
         }
-    },
 
-    stopHLS() {
-        if (this.hls) {
-            this.hls.destroy();
-            this.hls = null;
+        startPositionTracking();
+    }
+
+    function destroyHLS() {
+        if (hls) {
+            hls.destroy();
+            hls = null;
         }
-    },
+        video.removeAttribute('src');
+        video.load();
+    }
 
-    stopVideo() {
-        this.stopHLS();
-        if (this.video) {
-            this.video.pause();
-            this.video.src = '';
+    /* ── Position Tracking ── */
+
+    function resumePosition() {
+        if (resumed) return;
+        const saved = API.getPosition(currentType, currentId, currentSeason, currentEpisode);
+        if (!saved || saved <= 5) { resumed = true; return; }
+
+        function doSeek() {
+            if (resumed) return;
+            resumed = true;
+            if (video.duration && isFinite(video.duration) && saved >= video.duration - 10) return;
+            video.currentTime = saved;
+            App.showToast(`Resumed from ${formatTime(saved)}`);
         }
-    },
 
-    stop() {
-        this.savePosition();
-        this.stopVideo();
-        if (this.iframe) this.iframe.src = '';
-    },
+        if (video.readyState >= 3) { doSeek(); return; }
+        video.addEventListener('playing', doSeek, { once: true });
+        video.addEventListener('canplay', doSeek, { once: true });
+        setTimeout(doSeek, 5000);
+    }
 
-    // ─── Quality Management ───
+    function startPositionTracking() {
+        stopPositionTracking();
+        positionInterval = setInterval(() => {
+            if (!video.paused && video.currentTime > 0 && video.duration > 0) {
+                API.savePosition(currentType, currentId, currentSeason, currentEpisode, video.currentTime);
+                API.updateContinueWatching({
+                    id: currentId,
+                    type: currentType,
+                    title: currentDetail.title || currentDetail.name,
+                    poster_path: currentDetail.poster_path,
+                    backdrop_path: currentDetail.backdrop_path,
+                    season: currentSeason,
+                    episode: currentEpisode,
+                    currentTime: Math.floor(video.currentTime),
+                    duration: Math.floor(video.duration),
+                    percent: Math.floor((video.currentTime / video.duration) * 100),
+                    updatedAt: Date.now()
+                });
+            }
+        }, 5000);
+    }
 
-    _populateQualitySelector(levels) {
-        const select = document.getElementById('quality-select');
-        if (!select) return;
-        const qs = document.querySelector('.quality-selector');
-        if (qs) qs.style.display = 'flex';
+    function stopPositionTracking() {
+        if (positionInterval) {
+            clearInterval(positionInterval);
+            positionInterval = null;
+        }
+    }
 
-        select.innerHTML = '<option value="-1">Auto</option>';
-        if (!levels || levels.length === 0) return;
+    function formatTime(s) {
+        const m = Math.floor(s / 60);
+        const sec = Math.floor(s % 60);
+        return `${m}:${sec.toString().padStart(2, '0')}`;
+    }
 
-        // Sort by resolution descending
-        const sorted = levels.map((l, i) => ({ index: i, height: l.height, bitrate: l.bitrate }))
-            .sort((a, b) => b.height - a.height);
+    /* ── Episode Navigation ── */
 
-        sorted.forEach(l => {
-            const opt = document.createElement('option');
-            opt.value = l.index;
-            opt.textContent = `${l.height}p (${(l.bitrate / 1000000).toFixed(1)}Mbps)`;
-            select.appendChild(opt);
+    function buildSeasonTabs(detail, activeSeason) {
+        seasonTabs.innerHTML = '';
+        const seasons = (detail.seasons || []).filter(s => s.season_number > 0);
+        seasons.forEach(s => {
+            const chip = document.createElement('div');
+            chip.className = 'season-tab' + (s.season_number == activeSeason ? ' active' : '');
+            chip.textContent = `Season ${s.season_number}`;
+            chip.addEventListener('click', () => selectSeason(detail, s.season_number));
+            seasonTabs.appendChild(chip);
+        });
+    }
+
+    async function selectSeason(detail, seasonNum) {
+        currentSeason = seasonNum;
+        buildSeasonTabs(detail, seasonNum);
+        try {
+            const seasonData = await API.getSeasonDetail(currentId, seasonNum);
+            buildEpisodeChips(seasonData.episodes || [], seasonNum, currentEpisode);
+        } catch (err) {
+            console.error('Failed to load season:', err);
+        }
+    }
+
+    function buildEpisodeList(detail, season, episode) {
+        episodeList.innerHTML = '<div class="ep-chip">Loading...</div>';
+        API.getSeasonDetail(currentId, season).then(data => {
+            buildEpisodeChips(data.episodes || [], season, episode);
+        }).catch(() => {
+            episodeList.innerHTML = '';
+        });
+    }
+
+    function buildEpisodeChips(episodes, season, activeEp) {
+        episodeList.innerHTML = '';
+        episodes.forEach(ep => {
+            const chip = document.createElement('div');
+            chip.className = 'ep-chip' + (ep.episode_number == activeEp ? ' active' : '');
+            chip.textContent = `E${ep.episode_number}: ${ep.name || 'Episode ' + ep.episode_number}`;
+            chip.title = ep.overview || '';
+            chip.addEventListener('click', () => playEpisode(season, ep.episode_number));
+            episodeList.appendChild(chip);
+        });
+    }
+
+    function playEpisode(season, episode) {
+        const gen = ++sessionGen;
+        currentSeason = season;
+        currentEpisode = episode;
+        resumed = false;
+        preloadedStreams.clear();
+
+        currentTitle = (currentDetail.title || currentDetail.name || '') + ` S${season}E${episode}`;
+        titleEl.textContent = currentTitle;
+
+        episodeList.querySelectorAll('.ep-chip').forEach(c => {
+            const epNum = parseInt(c.textContent.match(/E(\d+)/)?.[1]);
+            c.classList.toggle('active', epNum === episode);
         });
 
-        // Set quality selector to 720p level if available, else auto
-        const idx720 = sorted.find(l => l.height === 720);
-        select.value = idx720 ? String(idx720.index) : '-1';
-    },
+        loadSource(currentProvider, gen).catch(e => console.warn('loadSource unhandled:', e));
+        preloadAllSources(gen).catch(e => console.warn('preloadAllSources unhandled:', e));
 
-    // Force 720p as default starting quality
-    _setPreferred720p(levels) {
-        if (!this.hls || !levels || levels.length === 0) return;
-        const target = this._preferredHeight;
-        // Find exact 720p or closest <=720p
-        let best = -1;
-        let bestDiff = Infinity;
-        for (let i = 0; i < levels.length; i++) {
-            const diff = Math.abs(levels[i].height - target);
-            if (diff < bestDiff) { best = i; bestDiff = diff; }
-            if (levels[i].height === target) { best = i; break; }
+        history.replaceState(null, '', `#watch/tv/${currentId}/${season}/${episode}`);
+    }
+
+    /* ── Close ── */
+
+    function close(skipNav) {
+        sessionGen++;
+        currentImdbId = null;
+        destroyHLS();
+        hideAllPlayers();
+        stopPositionTracking();
+        clearSubtitles();
+        iframe.src = 'about:blank';
+        preloadedStreams.clear();
+        overlay.classList.remove('active');
+        document.body.style.overflow = '';
+        if (!skipNav && currentType && currentId) {
+            location.hash = `${currentType}/${currentId}`;
         }
-        if (best >= 0) {
-            this.hls.currentLevel = best;
-            this.hls.nextLevel = best;
-            console.log(`[Player] Forced ${levels[best].height}p as default quality`);
-        }
-    },
+    }
 
-    _updateCurrentQuality(levelIndex) {
-        const select = document.getElementById('quality-select');
-        if (!select || !this.hls) return;
-        // If on auto, don't change select but show which is active
-        if (this.hls.autoLevelEnabled) {
-            select.value = '-1';
-            // Update auto label with current
-            const level = this.hls.levels[levelIndex];
-            if (level) {
-                const autoOpt = select.querySelector('option[value="-1"]');
-                if (autoOpt) autoOpt.textContent = `Auto (${level.height}p)`;
-            }
-        }
-    },
+    /* ── Helpers ── */
 
-    getQualities() {
-        if (!this.hls) return [];
-        return this.hls.levels.map((level, i) => ({
-            index: i,
-            height: level.height,
-            width: level.width,
-            bitrate: level.bitrate,
-            label: `${level.height}p`
-        }));
-    },
+    function hideAllPlayers() {
+        video.pause();
+        iframe.style.display = 'none';
+        video.style.display = 'none';
+        iframe.src = 'about:blank';
+    }
 
-    setQuality(index) {
-        if (!this.hls) return;
-        this.hls.currentLevel = index; // -1 for auto
-    },
-
-    // ─── Subtitle Management ───
-
-    clearSubtitleTracks() {
-        if (!this.video) return;
-        const tracks = this.video.querySelectorAll('track');
-        tracks.forEach(t => t.remove());
-    },
-
-    addSubtitleTrack(label, url, lang = 'en', isDefault = false) {
-        if (!this.video) return;
-        const track = document.createElement('track');
-        track.kind = 'subtitles';
-        track.label = label;
-        track.srclang = lang;
-        track.src = url;
-        if (isDefault) track.default = true;
-        this.video.appendChild(track);
-
-        if (isDefault) {
+    function showLoading(show) {
+        if (show) {
+            loading.style.display = 'flex';
+            loading.offsetHeight;
+            loading.classList.remove('hidden');
+            updateLoaderUI('Connecting to servers...', 0);
+        } else {
+            loading.classList.add('hidden');
             setTimeout(() => {
-                for (let i = 0; i < this.video.textTracks.length; i++) {
-                    if (this.video.textTracks[i].label === label) {
-                        this.video.textTracks[i].mode = 'showing';
-                    }
+                if (loading.classList.contains('hidden')) {
+                    loading.style.display = 'none';
                 }
-                this._applySubtitleStyles();
-            }, 100);
+            }, 600);
         }
-    },
+    }
 
-    setSubtitle(index) {
-        if (!this.video) return;
-        for (let i = 0; i < this.video.textTracks.length; i++) {
-            this.video.textTracks[i].mode = (i === index) ? 'showing' : 'hidden';
+    function updateLoaderUI(statusText, progress) {
+        if (loaderStatus) loaderStatus.textContent = statusText;
+        if (loaderBarFill) loaderBarFill.style.width = Math.min(progress, 100) + '%';
+    }
+
+    function buildLoaderSources() {
+        if (!loaderSources) return;
+        loaderSources.innerHTML = '';
+        sources.forEach(s => {
+            const el = document.createElement('div');
+            el.className = 'loader-src';
+            el.id = 'lsrc-' + s.id;
+            el.innerHTML = `<span class="src-dot"></span><span>${s.name}</span>`;
+            loaderSources.appendChild(el);
+        });
+    }
+
+    function setSourceStatus(srcId, status) {
+        const el = document.getElementById('lsrc-' + srcId);
+        if (el) {
+            el.classList.remove('testing', 'ready', 'failed');
+            if (status) el.classList.add(status);
         }
-        this._applySubtitleStyles();
-    },
+    }
 
-    disableSubtitles() {
-        if (!this.video) return;
-        for (let i = 0; i < this.video.textTracks.length; i++) {
-            this.video.textTracks[i].mode = 'hidden';
+    function onSourceChange() {
+        if (video.currentTime > 0 && video.duration > 0) {
+            API.savePosition(currentType, currentId, currentSeason, currentEpisode, video.currentTime);
         }
-    },
+        resumed = false;
+        loadSource(sourceSelect.value, sessionGen).catch(e => console.warn('loadSource unhandled:', e));
+    }
 
-    // ─── Subtitle Sync ───
+    /* ── Public ── */
 
-    adjustSubtitleOffset(delta) {
-        this._subtitleOffset += delta;
-        this._subtitleOffset = Math.round(this._subtitleOffset * 10) / 10;
-        document.getElementById('sub-sync-value').textContent = this._subtitleOffset.toFixed(1) + 's';
-        this._applySubtitleOffset();
-    },
-
-    resetSubtitleOffset() {
-        this._subtitleOffset = 0;
-        document.getElementById('sub-sync-value').textContent = '0.0s';
-        this._applySubtitleOffset();
-    },
-
-    _applySubtitleOffset() {
-        if (!this.video) return;
-        for (let i = 0; i < this.video.textTracks.length; i++) {
-            const track = this.video.textTracks[i];
-            if (track.mode === 'showing' && track.cues) {
-                for (let j = 0; j < track.cues.length; j++) {
-                    const cue = track.cues[j];
-                    if (cue._origStart === undefined) {
-                        cue._origStart = cue.startTime;
-                        cue._origEnd = cue.endTime;
-                    }
-                    cue.startTime = cue._origStart + this._subtitleOffset;
-                    cue.endTime = cue._origEnd + this._subtitleOffset;
-                }
-            }
-        }
-    },
-
-    // ─── Subtitle Styling ───
-
-    setSubtitleFontSize(delta) {
-        this._subtitleFontSize = Math.max(50, Math.min(300, this._subtitleFontSize + delta));
-        document.getElementById('sub-size-value').textContent = this._subtitleFontSize + '%';
-        this._applySubtitleStyles();
-    },
-
-    setSubtitleBg(bg) {
-        this._subtitleBg = bg;
-        this._applySubtitleStyles();
-    },
-
-    _applySubtitleStyles() {
-        // Use CSS ::cue styling via a dynamic style tag
-        let styleEl = document.getElementById('sub-cue-styles');
-        if (!styleEl) {
-            styleEl = document.createElement('style');
-            styleEl.id = 'sub-cue-styles';
-            document.head.appendChild(styleEl);
-        }
-        const fontSize = (this._subtitleFontSize / 100) * 1.1;
-        styleEl.textContent = `
-            video::cue {
-                font-size: ${fontSize}rem;
-                background: ${this._subtitleBg};
-                color: #fff;
-                font-family: 'Inter', sans-serif;
-                text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
-                padding: 4px 8px;
-            }
-        `;
-    },
-
-    _initSubtitleControls() {
-        // Quality selector
-        const qualitySelect = document.getElementById('quality-select');
-        if (qualitySelect) {
-            qualitySelect.addEventListener('change', (e) => {
-                this.setQuality(parseInt(e.target.value));
-            });
-        }
-
-        // Subtitle settings toggle
-        const settingsBtn = document.getElementById('subtitle-settings-btn');
-        const subControls = document.getElementById('subtitle-controls');
-        const closeBtn = document.getElementById('sub-ctrl-close');
-
-        if (settingsBtn && subControls) {
-            settingsBtn.addEventListener('click', () => {
-                subControls.classList.toggle('hidden');
-            });
-        }
-        if (closeBtn && subControls) {
-            closeBtn.addEventListener('click', () => {
-                subControls.classList.add('hidden');
-            });
-        }
-
-        // Sync controls
-        const syncMinus = document.getElementById('sub-sync-minus');
-        const syncPlus = document.getElementById('sub-sync-plus');
-        const syncReset = document.getElementById('sub-sync-reset');
-        if (syncMinus) syncMinus.addEventListener('click', () => this.adjustSubtitleOffset(-0.5));
-        if (syncPlus) syncPlus.addEventListener('click', () => this.adjustSubtitleOffset(0.5));
-        if (syncReset) syncReset.addEventListener('click', () => this.resetSubtitleOffset());
-
-        // Font size controls
-        const sizeMinus = document.getElementById('sub-size-minus');
-        const sizePlus = document.getElementById('sub-size-plus');
-        const sizeMinusBig = document.getElementById('sub-size-minus-big');
-        const sizePlusBig = document.getElementById('sub-size-plus-big');
-        if (sizeMinus) sizeMinus.addEventListener('click', () => this.setSubtitleFontSize(-10));
-        if (sizePlus) sizePlus.addEventListener('click', () => this.setSubtitleFontSize(10));
-        if (sizeMinusBig) sizeMinusBig.addEventListener('click', () => this.setSubtitleFontSize(-25));
-        if (sizePlusBig) sizePlusBig.addEventListener('click', () => this.setSubtitleFontSize(25));
-
-        // Background select
-        const bgSelect = document.getElementById('sub-bg-select');
-        if (bgSelect) {
-            bgSelect.addEventListener('change', (e) => this.setSubtitleBg(e.target.value));
-        }
-
-        // Apply initial styles
-        this._applySubtitleStyles();
-    },
-
-    // Load subtitles from OpenSubtitles
-    async loadSubtitles(imdbId, season, episode) {
-        try {
-            const subs = await API.getSubtitles(imdbId, season, episode);
-            this.currentSubs = subs;
-            return subs;
-        } catch (e) {
-            console.error('Failed to load subtitles:', e);
-            return [];
-        }
-    },
-};
+    return {
+        init,
+        play,
+        playHLS,
+        playEpisode,
+        close,
+        stop: () => close(true),
+        get currentId() { return currentId; },
+        get currentType() { return currentType; }
+    };
+})();
