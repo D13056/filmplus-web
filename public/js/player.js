@@ -165,22 +165,22 @@ const Player = {
         this.stopHLS();
         if (Hls.isSupported()) {
             this.hls = new Hls({
-                // ═══ ZERO-BUFFER INSTANT PLAY STRATEGY ═══
-                // Start lowest → instant first frame, then upgrade to max
-                startLevel: 0,                 // START at lowest quality for instant play
+                // ═══ FAST-START STREAMING STRATEGY ═══
+                // Auto quality from start, aggressive prebuffering, minimal stall
+                startLevel: -1,                // AUTO quality (ABR picks best from start)
                 maxBufferLength: 300,          // Buffer up to 5 minutes ahead
                 maxMaxBufferLength: 600,       // Allow up to 10min buffer
                 maxBufferSize: 500 * 1000 * 1000, // 500MB buffer pool
                 maxBufferHole: 0.1,            // Tight hole tolerance
                 backBufferLength: 300,         // Keep 5min behind for rewind
-                // Aggressive bandwidth estimation — assume fast connection
-                abrEwmaDefaultEstimate: 10000000, // Assume 10Mbps
-                abrBandWidthUpFactor: 0.4,     // Upgrade quality very eagerly
+                // Aggressive bandwidth estimation — high initial estimate for fast CDNs
+                abrEwmaDefaultEstimate: 20000000, // Assume 20Mbps (CDNs are fast)
+                abrBandWidthUpFactor: 0.3,     // Upgrade quality very eagerly
                 abrBandWidthFactor: 0.95,      // Downgrade quality reluctantly
-                abrEwmaFastLive: 1.5,
-                abrEwmaSlowLive: 4.0,
-                abrEwmaFastVoD: 1.5,
-                abrEwmaSlowVoD: 4.0,
+                abrEwmaFastLive: 1.0,
+                abrEwmaSlowLive: 3.0,
+                abrEwmaFastVoD: 1.0,
+                abrEwmaSlowVoD: 3.0,
                 // Fragment loading — ultra aggressive retries
                 fragLoadingMaxRetry: 12,
                 fragLoadingRetryDelay: 200,
@@ -197,6 +197,10 @@ const Player = {
                 testBandwidth: true,
                 startFragPrefetch: true,       // Prefetch next fragment
                 highBufferWatchdogPeriod: 1,   // Check buffer every 1s
+                // Faster level switching
+                capLevelToPlayerSize: false,    // Don't cap quality to player size
+                nudgeOffset: 0.1,              // Faster nudge on stall
+                nudgeMaxRetry: 5,
             });
 
             this.updateLoading('Preparing your stream', 'CONNECTING TO HD SERVER', 20);
@@ -204,17 +208,17 @@ const Player = {
             this.hls.loadSource(url);
             this.hls.attachMedia(this.video);
 
-            // Track quality upgrade phase
+            // Track quality — ensure ABR stays in auto mode
             let hasUpgraded = false;
-            const upgradeToMax = () => {
+            const ensureAutoQuality = () => {
                 if (hasUpgraded || !this.hls) return;
                 const levels = this.hls.levels;
                 if (levels && levels.length > 1) {
-                    // Switch to auto (ABR) which will pick highest sustainable quality
+                    // Ensure we're in auto ABR mode
                     this.hls.currentLevel = -1;
                     this.hls.nextLevel = -1;
                     hasUpgraded = true;
-                    console.log('[Player] Phase 3: Quality upgrade to auto-max');
+                    console.log('[Player] ABR auto quality confirmed');
                 }
             };
 
@@ -223,17 +227,13 @@ const Player = {
                 this._populateQualitySelector(data.levels);
                 this.video.play().catch(() => {});
                 this.restorePosition();
-                // Phase 3: After 3 seconds of playback, unlock quality to auto-max
-                setTimeout(upgradeToMax, 3000);
+                // Confirm ABR mode after first fragment loads
+                setTimeout(ensureAutoQuality, 2000);
             });
 
             this.hls.on(Hls.Events.FRAG_BUFFERED, () => {
                 this.updateLoading('Almost ready', 'OPTIMIZING QUALITY', 85);
-                // Upgrade quality once we have enough buffer (>10s)
-                if (!hasUpgraded && this.video.buffered.length > 0) {
-                    const buffered = this.video.buffered.end(this.video.buffered.length - 1) - this.video.currentTime;
-                    if (buffered > 10) upgradeToMax();
-                }
+                ensureAutoQuality();
             });
 
             // Hide overlay once video starts playing

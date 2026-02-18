@@ -14,6 +14,19 @@ import('@definisi/vidsrc-scraper').then(mod => {
     console.warn('  ✗ VidSrc scraper not available:', e.message);
 });
 
+// FlixHQ via @consumet/extensions
+let FlixHQ = null;
+try {
+    const { MOVIES } = require('@consumet/extensions');
+    FlixHQ = new MOVIES.FlixHQ();
+    console.log('  ✓ FlixHQ extractor loaded');
+} catch(e) {
+    console.warn('  ✗ FlixHQ not available:', e.message);
+}
+
+// In-memory cache for TMDB title lookups (avoids repeat API calls)
+const tmdbTitleCache = new Map();
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const TMDB_KEY = process.env.TMDB_API_KEY;
@@ -630,8 +643,10 @@ const SOURCE_PROVIDERS = [
     { id: 'moviesapi', name: 'Premium HD', quality: '4K', maxRes: 2160, priority: 1, extractor: 'moviesapi-flixcdn' },
     { id: 'vidsrc', name: 'VidSrc Pro', quality: '1080P', maxRes: 1080, priority: 2, extractor: 'vidsrc-scraper' },
     { id: 'vidsrcicu', name: 'VidSrc ICU', quality: '1080P', maxRes: 1080, priority: 3, extractor: 'vidsrc-icu' },
-    { id: 'morphtv', name: 'MorphTV', quality: '720P', maxRes: 720, priority: 4, apiOnly: true },
-    { id: 'teatv', name: 'TeaTV', quality: '720P', maxRes: 720, priority: 5, apiOnly: true },
+    { id: 'upcloud', name: 'UpCloud', quality: '720P', maxRes: 720, priority: 4, extractor: 'flixhq-upcloud' },
+    { id: 'vidcloud', name: 'VidCloud', quality: '720P', maxRes: 720, priority: 5, extractor: 'flixhq-vidcloud' },
+    { id: 'morphtv', name: 'MorphTV', quality: '720P', maxRes: 720, priority: 6, apiOnly: true },
+    { id: 'teatv', name: 'TeaTV', quality: '720P', maxRes: 720, priority: 7, apiOnly: true },
 ];
 
 // Map source IDs to their specific extractors
@@ -639,6 +654,8 @@ const EXTRACTOR_MAP = {
     'moviesapi': 'moviesapi-flixcdn',
     'vidsrc': 'vidsrc-scraper',
     'vidsrcicu': 'vidsrc-icu',
+    'upcloud': 'flixhq-upcloud',
+    'vidcloud': 'flixhq-vidcloud',
 };
 
 // ─── Server-side Stream Extraction via MoviesAPI + FlixCDN ───
@@ -797,6 +814,83 @@ async function extractStreamFromVidsrcICU(tmdbId, type, season, episode) {
     throw new Error('No m3u8 found in vidsrc.icu page');
 }
 
+// ─── FlixHQ Stream Extraction via @consumet/extensions ───
+// Searches FlixHQ by TMDB title, extracts m3u8 from UpCloud/VidCloud servers
+
+async function getTmdbTitle(tmdbId, type) {
+    const key = `${type}-${tmdbId}`;
+    if (tmdbTitleCache.has(key)) return tmdbTitleCache.get(key);
+    const url = `${TMDB_BASE}/${type === 'tv' ? 'tv' : 'movie'}/${tmdbId}?api_key=${TMDB_KEY}`;
+    const res = await fetch(url, { headers: { 'User-Agent': STREAM_UA } });
+    if (!res.ok) throw new Error(`TMDB returned ${res.status}`);
+    const data = await res.json();
+    const result = {
+        title: data.title || data.name,
+        year: (data.release_date || data.first_air_date || '').split('-')[0]
+    };
+    tmdbTitleCache.set(key, result);
+    return result;
+}
+
+async function extractStreamFromFlixHQ(tmdbId, type, season, episode, server) {
+    if (!FlixHQ) throw new Error('FlixHQ not loaded');
+    
+    // Get title from TMDB
+    const { title, year } = await getTmdbTitle(tmdbId, type);
+    if (!title) throw new Error('Could not get title from TMDB');
+    
+    // Search FlixHQ
+    const results = await FlixHQ.search(title);
+    if (!results?.results?.length) throw new Error('No results on FlixHQ');
+    
+    // Match by type and year
+    let match;
+    if (type === 'tv') {
+        match = results.results.find(r => r.type === 'TV Series' && r.title?.toLowerCase() === title.toLowerCase());
+        if (!match) match = results.results.find(r => r.type === 'TV Series');
+    } else {
+        match = results.results.find(r => r.type === 'Movie' && r.releaseDate === year);
+        if (!match) match = results.results.find(r => r.type === 'Movie' && r.title?.toLowerCase() === title.toLowerCase());
+        if (!match) match = results.results.find(r => r.type === 'Movie');
+    }
+    if (!match) throw new Error('No matching result on FlixHQ');
+    
+    // Get media info
+    const info = await FlixHQ.fetchMediaInfo(match.id);
+    
+    let episodeId;
+    if (type === 'tv' && season && episode) {
+        const ep = info.episodes?.find(e => e.season === parseInt(season) && e.number === parseInt(episode));
+        if (!ep) throw new Error(`S${season}E${episode} not found on FlixHQ`);
+        episodeId = ep.id;
+    } else {
+        episodeId = info.episodes?.[0]?.id;
+        if (!episodeId) throw new Error('No episode ID for movie on FlixHQ');
+    }
+    
+    // Fetch sources from the requested server (upcloud or vidcloud)
+    const sources = await FlixHQ.fetchEpisodeSources(episodeId, server);
+    if (!sources?.sources?.length) throw new Error(`No sources from FlixHQ ${server}`);
+    
+    const m3u8 = sources.sources.find(s => s.isM3U8) || sources.sources[0];
+    if (!m3u8?.url) throw new Error(`No m3u8 URL from FlixHQ ${server}`);
+    
+    // Extract subtitles
+    const subtitles = (sources.subtitles || []).map(s => ({
+        lang: s.lang || 'en',
+        label: s.lang || 'Sub',
+        url: s.url
+    }));
+    
+    return {
+        streamUrl: m3u8.url,
+        streamType: 'hls',
+        subtitles,
+        title: title,
+        referer: sources.headers?.Referer || 'https://streameeeeee.site/'
+    };
+}
+
 // ─── Multi-Extractor Chain ───
 // Tries multiple extraction methods in order, returns first success
 async function extractStreamMulti(tmdbId, type, season, episode) {
@@ -804,6 +898,8 @@ async function extractStreamMulti(tmdbId, type, season, episode) {
         { name: 'moviesapi-flixcdn', fn: () => extractStreamFromMoviesAPI(tmdbId, type, season, episode) },
         { name: 'vidsrc-scraper', fn: () => extractStreamFromVidsrc(tmdbId, type, season, episode) },
         { name: 'vidsrc-icu', fn: () => extractStreamFromVidsrcICU(tmdbId, type, season, episode) },
+        { name: 'flixhq-upcloud', fn: () => extractStreamFromFlixHQ(tmdbId, type, season, episode, 'upcloud') },
+        { name: 'flixhq-vidcloud', fn: () => extractStreamFromFlixHQ(tmdbId, type, season, episode, 'vidcloud') },
     ];
     
     const errors = [];
@@ -840,6 +936,8 @@ app.get('/api/extract-stream', async (req, res) => {
                 'moviesapi-flixcdn': () => extractStreamFromMoviesAPI(tmdbId, t, s, e),
                 'vidsrc-scraper': () => extractStreamFromVidsrc(tmdbId, t, s, e),
                 'vidsrc-icu': () => extractStreamFromVidsrcICU(tmdbId, t, s, e),
+                'flixhq-upcloud': () => extractStreamFromFlixHQ(tmdbId, t, s, e, 'upcloud'),
+                'flixhq-vidcloud': () => extractStreamFromFlixHQ(tmdbId, t, s, e, 'vidcloud'),
             }[extractorName];
             if (!extractorFn) throw new Error(`Unknown extractor: ${extractorName}`);
             const r = await extractorFn();
@@ -851,7 +949,11 @@ app.get('/api/extract-stream', async (req, res) => {
         }
 
         // Proxy the stream URL through our server to avoid CORS
-        const proxiedUrl = `/api/stream-proxy?url=${encodeURIComponent(result.streamUrl)}`;
+        // Include referer hint if the extractor provides one (e.g. FlixHQ CDNs need streameeeeee.site referer)
+        let proxiedUrl = `/api/stream-proxy?url=${encodeURIComponent(result.streamUrl)}`;
+        if (result.referer) {
+            proxiedUrl += `&referer=${encodeURIComponent(result.referer)}`;
+        }
 
         // Proxy subtitle URLs too
         const proxiedSubs = (result.subtitles || []).map(sub => ({
@@ -876,20 +978,28 @@ app.get('/api/extract-stream', async (req, res) => {
 // ─── HLS/Video Proxy (to bypass CORS for extracted streams) ───
 app.get('/api/stream-proxy', async (req, res) => {
     try {
-        const { url } = req.query;
+        const { url, referer: customReferer } = req.query;
         if (!url) return res.status(400).json({ error: 'URL required' });
         
         const parsedUrl = new URL(url);
 
-        // Determine correct Referer — flixcdn streams (direct IP CDN) require flixcdn.cyou referer
-        let referer = parsedUrl.origin + '/';
-        let origin = parsedUrl.origin;
+        // Determine correct Referer:
+        // 1. Custom referer from query param (e.g. FlixHQ CDNs need streameeeeee.site)
+        // 2. FlixCDN streams (direct IP or flixcdn/tiktok CDN) need flixcdn.cyou
+        // 3. Default to the target URL's origin
+        let referer, origin;
         const isFlixcdnStream = /^\d+\.\d+\.\d+\.\d+$/.test(parsedUrl.hostname) || 
                                 parsedUrl.hostname.includes('flixcdn') ||
                                 parsedUrl.hostname.includes('tiktokcdn');
-        if (isFlixcdnStream) {
+        if (customReferer) {
+            referer = customReferer;
+            origin = new URL(customReferer).origin;
+        } else if (isFlixcdnStream) {
             referer = 'https://flixcdn.cyou/';
             origin = 'https://flixcdn.cyou';
+        } else {
+            referer = parsedUrl.origin + '/';
+            origin = parsedUrl.origin;
         }
 
         const response = await fetch(url, {
@@ -908,6 +1018,9 @@ app.get('/api/stream-proxy', async (req, res) => {
         const contentType = response.headers.get('content-type') || 'application/octet-stream';
         res.set('Content-Type', contentType);
         res.set('Access-Control-Allow-Origin', '*');
+        
+        // Propagate referer param for sub-requests (m3u8 → segment URLs)
+        const refererParam = customReferer ? `&referer=${encodeURIComponent(customReferer)}` : '';
         
         // For m3u8 playlists, rewrite ALL URLs to go through our proxy
         if (url.includes('.m3u8') || url.includes('cf-master') || contentType.includes('mpegurl') || contentType.includes('m3u8')) {
@@ -930,22 +1043,24 @@ app.get('/api/stream-proxy', async (req, res) => {
                 if (trimmed.startsWith('#') && trimmed.includes('URI=')) {
                     return line.replace(/URI="([^"]+)"/g, (match, uri) => {
                         const abs = resolveUrl(uri);
-                        return `URI="${'/api/stream-proxy?url=' + encodeURIComponent(abs)}"`;
+                        return `URI="${'/api/stream-proxy?url=' + encodeURIComponent(abs) + refererParam}"`;
                     });
                 }
 
                 if (trimmed.startsWith('#')) return line;
                 
                 const absoluteUrl = resolveUrl(trimmed);
-                return `/api/stream-proxy?url=${encodeURIComponent(absoluteUrl)}`;
+                return `/api/stream-proxy?url=${encodeURIComponent(absoluteUrl)}${refererParam}`;
             }).join('\n');
             
             res.set('Content-Type', 'application/vnd.apple.mpegurl');
             res.send(playlist);
         } else {
-            // For .ts segments and other binary data, pipe directly
-            const buffer = await response.buffer();
-            res.send(buffer);
+            // For .ts segments and other binary data — STREAM directly (no buffering)
+            // This is critical for reducing latency: data flows to client as it arrives
+            const contentLength = response.headers.get('content-length');
+            if (contentLength) res.set('Content-Length', contentLength);
+            response.body.pipe(res);
         }
     } catch (e) {
         console.error('Stream proxy error:', e.message);
