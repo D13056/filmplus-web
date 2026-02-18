@@ -629,15 +629,12 @@ app.get('/api/keys-info', (req, res) => {
 const SOURCE_PROVIDERS = [
     { id: 'vidsrc2', name: 'VidSrc Pro', quality: '4K', maxRes: 2160, priority: 1 },
     { id: 'vidsrcicu', name: 'VidSrc ICU', quality: '4K', maxRes: 2160, priority: 2 },
-    { id: 'autoembed', name: 'AutoEmbed', quality: '1080P', maxRes: 1080, priority: 3 },
-    { id: 'autoembedcc', name: 'AutoEmbed CC', quality: '1080P', maxRes: 1080, priority: 4 },
-    { id: 'multiembed', name: 'MultiEmbed', quality: '1080P', maxRes: 1080, priority: 5 },
-    { id: 'vidsrc', name: 'VidSrc', quality: '1080P', maxRes: 1080, priority: 6 },
-    { id: 'smashystream', name: 'SmashyStream', quality: '1080P', maxRes: 1080, priority: 7 },
-    { id: 'embed', name: '2Embed', quality: '1080P', maxRes: 1080, priority: 8 },
-    { id: 'vidsrccc', name: 'VidSrc CC', quality: '1080P', maxRes: 1080, priority: 9 },
-    { id: 'morphtv', name: 'MorphTV', quality: '720P', maxRes: 720, priority: 10, apiOnly: true },
-    { id: 'teatv', name: 'TeaTV', quality: '720P', maxRes: 720, priority: 11, apiOnly: true },
+    { id: 'autoembedcc', name: 'AutoEmbed CC', quality: '1080P', maxRes: 1080, priority: 3 },
+    { id: 'multiembed', name: 'MultiEmbed', quality: '1080P', maxRes: 1080, priority: 4 },
+    { id: 'vidsrc', name: 'VidSrc', quality: '1080P', maxRes: 1080, priority: 5 },
+    { id: 'vidsrccc', name: 'VidSrc CC', quality: '1080P', maxRes: 1080, priority: 6 },
+    { id: 'morphtv', name: 'MorphTV', quality: '720P', maxRes: 720, priority: 7, apiOnly: true },
+    { id: 'teatv', name: 'TeaTV', quality: '720P', maxRes: 720, priority: 8, apiOnly: true },
 ];
 
 function getEmbedUrl(providerId, tmdbId, type, season, episode, imdbId) {
@@ -654,9 +651,6 @@ function getEmbedUrl(providerId, tmdbId, type, season, episode, imdbId) {
         case 'vidsrccc':
             if (type === 'tv') return `https://vidsrc.cc/v2/embed/tv/${tmdbId}/${season}/${episode}`;
             return `https://vidsrc.cc/v2/embed/movie/${tmdbId}`;
-        case 'embed':
-            if (type === 'tv') return `https://www.2embed.cc/embedtv/${tmdbId}&s=${season}&e=${episode}`;
-            return `https://www.2embed.cc/embed/${tmdbId}`;
         case 'multiembed':
             if (type === 'tv') return `https://multiembed.mov/directstream.php?video_id=${tmdbId}&tmdb=1&s=${season}&e=${episode}`;
             return `https://multiembed.mov/directstream.php?video_id=${tmdbId}&tmdb=1`;
@@ -664,15 +658,9 @@ function getEmbedUrl(providerId, tmdbId, type, season, episode, imdbId) {
             return null;
         case 'teatv':
             return null;
-        case 'autoembed':
-            if (type === 'tv') return `https://autoembed.co/tv/tmdb/${tmdbId}-${season}-${episode}`;
-            return `https://autoembed.co/movie/tmdb/${tmdbId}`;
         case 'autoembedcc':
             if (type === 'tv') return `https://player.autoembed.cc/embed/tv/${tmdbId}/${season}/${episode}`;
             return `https://player.autoembed.cc/embed/movie/${tmdbId}`;
-        case 'smashystream':
-            if (type === 'tv') return `https://embed.smashystream.com/playere.php?tmdb=${tmdbId}&season=${season}&episode=${episode}`;
-            return `https://embed.smashystream.com/playere.php?tmdb=${tmdbId}`;
         default:
             return null;
     }
