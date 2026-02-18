@@ -168,16 +168,24 @@ const Player = {
     restorePosition() {
         if (this._savedPosition > 1 && this.video) {
             const pos = this._savedPosition;
+            this._savedPosition = 0; // Clear after using to prevent double-seek
             const restore = () => {
-                if (this.video.duration && pos < this.video.duration - 5) {
+                if (this.video && this.video.duration && pos < this.video.duration - 5) {
                     this.video.currentTime = pos;
+                    console.log(`[Player] Resumed at ${Math.floor(pos)}s / ${Math.floor(this.video.duration)}s`);
                 }
             };
-            // Try immediately, and also on loadedmetadata as fallback
-            if (this.video.readyState >= 1) {
+            // Try immediately, and also on loadedmetadata/canplay as fallback
+            if (this.video.readyState >= 1 && this.video.duration) {
                 restore();
             } else {
                 this.video.addEventListener('loadedmetadata', restore, { once: true });
+                // Extra safety: also try on canplay in case loadedmetadata already fired
+                this.video.addEventListener('canplay', () => {
+                    if (this.video && this.video.currentTime < 2 && pos > 30) {
+                        restore();
+                    }
+                }, { once: true });
             }
         }
     },

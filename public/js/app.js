@@ -878,7 +878,16 @@ const App = {
         this._preloadedStreams.clear();
         this._failedSources.clear();
         this._preloadGeneration = (this._preloadGeneration || 0) + 1; // Invalidate stale preloads
-        Player.clearSavedPosition();
+
+        // Check continue watching data for resume position
+        const cwItems = this.storage.get('continueWatching', []);
+        const cwMatch = cwItems.find(i => i.id == tmdbId && i.type === type &&
+            i.season == (season || null) && i.episode == (episode || null));
+        if (cwMatch && cwMatch.currentTime > 30) {
+            Player._savedPosition = cwMatch.currentTime;
+        } else {
+            Player.clearSavedPosition();
+        }
 
         // Show loading overlay immediately
         Player.showLoading('Loading movie info', 'PREPARING YOUR EXPERIENCE');
