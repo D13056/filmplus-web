@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FilmPlus</title>
-    <link rel="stylesheet" href="/css/style.css?v=17">
+    <link rel="stylesheet" href="/css/style.css?v=18">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -69,6 +69,14 @@
                     </div>
                 </div>
                 <div class="content-sections">
+                    <div class="content-row" id="continue-watching" style="display:none">
+                        <div class="row-header"><h2><i class="fas fa-history"></i> Continue Watching</h2><a class="cw-clear" id="cw-clear-btn">Clear All</a></div>
+                        <div class="row-scroll-wrap">
+                            <button class="row-nav left hidden" aria-label="Scroll left"><i class="fas fa-chevron-left"></i></button>
+                            <div class="row-scroll"></div>
+                            <button class="row-nav right" aria-label="Scroll right"><i class="fas fa-chevron-right"></i></button>
+                        </div>
+                    </div>
                     <div class="content-row" id="trending-movies">
                         <div class="row-header"><h2>Trending Movies</h2><a class="see-all" data-type="movie" data-cat="trending">See All →</a></div>
                         <div class="row-scroll-wrap">
@@ -246,7 +254,7 @@
                                 allowfullscreen 
                                 allow="autoplay; encrypted-media; picture-in-picture; fullscreen" 
                                 frameborder="0"></iframe>
-                            <video id="player-video" controls crossorigin="anonymous" class="hidden"></video>
+                            <video id="player-video" controls crossorigin="anonymous" preload="auto" playsinline class="hidden"></video>
                             <!-- Loading Overlay -->
                             <div id="player-loading-overlay" class="player-loading-overlay">
                                 <div class="loading-content">
@@ -460,8 +468,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
     <script src="/js/api.js?v=12"></script>
-    <script src="/js/player.js?v=16"></script>
-    <script src="/js/app.js?v=19"></script>
+    <script src="/js/player.js?v=17"></script>
+    <script src="/js/app.js?v=20"></script>
 
     <!-- Security: Disable right-click, DevTools, source viewing, copy -->
     <script>

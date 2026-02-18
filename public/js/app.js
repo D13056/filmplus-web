@@ -133,6 +133,8 @@ const App = {
 
         // Stop player when leaving watch page
         if (pageId !== 'watch') {
+            this._saveWatchProgressNow();
+            this._stopWatchProgressTracker();
             Player.stop();
         }
 
@@ -325,7 +327,7 @@ const App = {
         });
         document.getElementById('clear-all-data').addEventListener('click', () => {
             if (confirm('Are you sure? This will clear all favorites, watchlist, and history.')) {
-                ['favorites', 'watchlist', 'history', 'settings'].forEach(k => this.storage.remove(k));
+                ['favorites', 'watchlist', 'history', 'continueWatching', 'settings'].forEach(k => this.storage.remove(k));
                 this.showToast('All data cleared');
             }
         });
@@ -385,6 +387,9 @@ const App = {
             this.renderRow('popular-tv', popTV.results, 'tv');
             this.renderRow('toprated-movies', topMovies.results, 'movie');
             this.renderRow('toprated-tv', topTV.results, 'tv');
+
+            // Load continue watching section
+            this.loadContinueWatching();
 
             // Init row scroll navigation arrows
             this.initRowNavButtons();
@@ -942,9 +947,13 @@ const App = {
             type,
             title: detail.title || detail.name,
             poster_path: detail.poster_path,
+            backdrop_path: detail.backdrop_path,
             season, episode,
             timestamp: Date.now()
         });
+
+        // Start tracking watch progress for continue watching
+        this._startWatchProgressTracker(detail, type, season, episode);
     },
 
     async loadSources() {
@@ -1674,6 +1683,7 @@ const App = {
             favorites: this.storage.get('favorites', []),
             watchlist: this.storage.get('watchlist', []),
             history: this.storage.get('history', []),
+            continueWatching: this.storage.get('continueWatching', []),
             settings: this.storage.get('settings', {}),
             theme: this.storage.get('theme', 'dark')
         };
@@ -1701,6 +1711,7 @@ const App = {
                     if (data.favorites) this.storage.set('favorites', data.favorites);
                     if (data.watchlist) this.storage.set('watchlist', data.watchlist);
                     if (data.history) this.storage.set('history', data.history);
+                    if (data.continueWatching) this.storage.set('continueWatching', data.continueWatching);
                     if (data.settings) this.storage.set('settings', data.settings);
                     if (data.theme) this.storage.set('theme', data.theme);
                     this.showToast('Data imported successfully', 'success');
@@ -1727,6 +1738,153 @@ const App = {
             toast.style.transition = '0.3s ease';
             setTimeout(() => toast.remove(), 300);
         }, 3000);
+    },
+
+    // ─── Continue Watching — Watch Progress Tracking ───
+
+    _watchProgressTimer: null,
+    _watchProgressMeta: null,
+
+    _startWatchProgressTracker(detail, type, season, episode) {
+        this._stopWatchProgressTracker();
+        this._watchProgressMeta = {
+            id: detail.id,
+            type,
+            title: detail.title || detail.name,
+            poster_path: detail.poster_path,
+            backdrop_path: detail.backdrop_path,
+            season: season ? parseInt(season) : null,
+            episode: episode ? parseInt(episode) : null
+        };
+        // Save progress every 10 seconds
+        this._watchProgressTimer = setInterval(() => this._saveWatchProgressNow(), 10000);
+        // Also save on video pause and on beforeunload
+        const video = document.getElementById('player-video');
+        if (video) {
+            video.addEventListener('pause', this._onVideoPause = () => this._saveWatchProgressNow());
+        }
+        window.addEventListener('beforeunload', this._onBeforeUnload = () => this._saveWatchProgressNow());
+    },
+
+    _stopWatchProgressTracker() {
+        if (this._watchProgressTimer) {
+            clearInterval(this._watchProgressTimer);
+            this._watchProgressTimer = null;
+        }
+        const video = document.getElementById('player-video');
+        if (video && this._onVideoPause) {
+            video.removeEventListener('pause', this._onVideoPause);
+        }
+        if (this._onBeforeUnload) {
+            window.removeEventListener('beforeunload', this._onBeforeUnload);
+        }
+        this._watchProgressMeta = null;
+    },
+
+    _saveWatchProgressNow() {
+        const meta = this._watchProgressMeta;
+        const video = document.getElementById('player-video');
+        if (!meta || !video || !video.duration || video.duration < 60) return;
+        const currentTime = video.currentTime;
+        const duration = video.duration;
+        // Only save if watched at least 30s and not finished (within last 5 min for movies, 2 min for episodes)
+        const endThreshold = meta.type === 'tv' ? 120 : 300;
+        if (currentTime < 30) return;
+        // If basically finished, remove from continue watching
+        if (currentTime >= duration - endThreshold) {
+            this._removeContinueWatching(meta.id, meta.type, meta.season, meta.episode);
+            return;
+        }
+        const progress = {
+            id: meta.id,
+            type: meta.type,
+            title: meta.title,
+            poster_path: meta.poster_path,
+            backdrop_path: meta.backdrop_path,
+            season: meta.season,
+            episode: meta.episode,
+            currentTime: Math.floor(currentTime),
+            duration: Math.floor(duration),
+            percent: Math.floor((currentTime / duration) * 100),
+            updatedAt: Date.now()
+        };
+        let items = this.storage.get('continueWatching', []);
+        // Remove existing entry for same content
+        items = items.filter(i => !(i.id === meta.id && i.type === meta.type &&
+            i.season === meta.season && i.episode === meta.episode));
+        items.unshift(progress);
+        if (items.length > 30) items = items.slice(0, 30);
+        this.storage.set('continueWatching', items);
+    },
+
+    _removeContinueWatching(id, type, season, episode) {
+        let items = this.storage.get('continueWatching', []);
+        items = items.filter(i => !(i.id === id && i.type === type &&
+            i.season == season && i.episode == episode));
+        this.storage.set('continueWatching', items);
+    },
+
+    loadContinueWatching() {
+        const section = document.getElementById('continue-watching');
+        if (!section) return;
+        const items = this.storage.get('continueWatching', []);
+        if (items.length === 0) {
+            section.style.display = 'none';
+            return;
+        }
+        section.style.display = '';
+        const row = section.querySelector('.row-scroll');
+        row.innerHTML = items.map(item => this._createContinueWatchingCard(item)).join('');
+
+        // Bind clear button
+        const clearBtn = document.getElementById('cw-clear-btn');
+        if (clearBtn && !clearBtn._bound) {
+            clearBtn._bound = true;
+            clearBtn.addEventListener('click', () => {
+                this.storage.set('continueWatching', []);
+                section.style.display = 'none';
+                this.showToast('Continue watching cleared');
+            });
+        }
+    },
+
+    _createContinueWatchingCard(item) {
+        const title = item.title || 'Unknown';
+        const percent = item.percent || 0;
+        const timeLeft = item.duration - item.currentTime;
+        const minLeft = Math.ceil(timeLeft / 60);
+        const timeLabel = minLeft >= 60 ? `${Math.floor(minLeft / 60)}h ${minLeft % 60}m left` : `${minLeft}m left`;
+        const epLabel = item.type === 'tv' && item.season && item.episode
+            ? `<span class="cw-ep">S${item.season}:E${item.episode}</span>` : '';
+        const watchHash = item.type === 'tv'
+            ? `watch/${item.type}/${item.id}/${item.season}/${item.episode}`
+            : `watch/${item.type}/${item.id}`;
+
+        return `
+            <div class="card cw-card" data-id="${item.id}" data-type="${item.type}" onclick="App.navigate('${watchHash}')">
+                <div class="card-poster">
+                    <img src="${API.poster(item.poster_path)}" alt="${title}" loading="lazy" onerror="this.src='/img/no-poster.svg'">
+                    <div class="cw-overlay">
+                        <div class="cw-play"><i class="fas fa-play"></i></div>
+                        <div class="cw-time">${timeLabel}</div>
+                        ${epLabel}
+                    </div>
+                    <div class="cw-progress-bar"><div class="cw-progress" style="width:${percent}%"></div></div>
+                    <button class="cw-remove" onclick="event.stopPropagation(); App._removeCWCard(${item.id}, '${item.type}', ${item.season || 'null'}, ${item.episode || 'null'})" title="Remove">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="card-info">
+                    <h3>${title}</h3>
+                    <span class="cw-meta">${item.type === 'tv' ? `S${item.season} E${item.episode}` : `${percent}% watched`}</span>
+                </div>
+            </div>
+        `;
+    },
+
+    _removeCWCard(id, type, season, episode) {
+        this._removeContinueWatching(id, type, season, episode);
+        this.loadContinueWatching();
     },
 
     // ─── Loading ───

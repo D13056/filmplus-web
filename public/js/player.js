@@ -228,56 +228,75 @@ const Player = {
         this.stopHLS();
         if (Hls.isSupported()) {
             this.hls = new Hls({
-                // ═══ UC-BROWSER-STYLE FAST-START STREAMING ═══
+                // ═══ OPTIMIZED HLS.js v1.5 CONFIG ═══
                 //
-                // Strategy from UC Browser's Apollo player:
-                // 1. Small first_buffer (start playing FAST) → then grow buffer in background
-                // 2. Aggressive prefetching with connection reuse
-                // 3. Fast quality switching — drop quality on stall, upgrade eagerly
-                // 4. Compact back-buffer to prevent SourceBuffer overflow
+                // Tuned based on HLS.js API docs & real-world testing:
+                // 1. Correct modern LoadPolicy (fragLoading* is DEPRECATED)
+                // 2. Conservative initial bandwidth → fast ramp-up
+                // 3. Proper EWMA half-lives for stable quality switching
+                // 4. GPU-friendly buffer management
 
                 startLevel: -1,                // Will be overridden to 720p after manifest parsed
 
-                // ─── Buffer Management (UC-Style: first_buffer → fixed_buffer) ───
-                maxBufferLength: 60,           // Buffer 60s ahead (UC's "fixed_buffer_time")
-                maxMaxBufferLength: 120,       // Allow growing to 2min on fast connections
-                maxBufferSize: 250 * 1000 * 1000, // 250MB buffer pool (prevents SourceBuffer overflow)
-                maxBufferHole: 0.3,            // Slightly relaxed hole tolerance to avoid stalls
-                backBufferLength: 30,          // Keep only 30s behind (UC cleans aggressively)
+                // ─── Buffer Management ───
+                maxBufferLength: 30,           // Buffer 30s ahead (HLS.js default, proven stable)
+                maxMaxBufferLength: 600,       // Allow growing to 10min on fast connections (default)
+                maxBufferSize: 120 * 1000 * 1000, // 120MB buffer pool (safe for mobile)
+                maxBufferHole: 0.1,            // Tight hole tolerance (default 0.1) — less stutter
+                backBufferLength: 30,          // Keep 30s behind playhead
 
-                // ─── Bandwidth Estimation (UC-Style: fast initial, aggressive upgrade) ───
-                abrEwmaDefaultEstimate: 20000000, // Assume 20Mbps initially (CDNs are fast)
-                abrBandWidthUpFactor: 0.2,     // Upgrade quality VERY eagerly (UC-style)
-                abrBandWidthFactor: 0.95,      // Downgrade reluctantly
-                abrEwmaFastLive: 1.0,
-                abrEwmaSlowLive: 3.0,
-                abrEwmaFastVoD: 1.0,
-                abrEwmaSlowVoD: 3.0,
+                // ─── Bandwidth Estimation (conservative start, eager upgrade) ───
+                abrEwmaDefaultEstimate: 800000,   // Start at 800Kbps (safe, ramps up in ~2 segments)
+                abrBandWidthUpFactor: 0.7,        // Upgrade when 70% confident (HLS.js default)
+                abrBandWidthFactor: 0.95,         // Downgrade reluctantly (keep quality stable)
+                abrEwmaFastLive: 3.0,             // Default half-life for fast EWMA
+                abrEwmaSlowLive: 9.0,             // Default half-life for slow EWMA
+                abrEwmaFastVoD: 3.0,              // Default — smooth quality transitions
+                abrEwmaSlowVoD: 9.0,              // Default — prevents oscillation
+                abrMaxWithRealBitrate: true,       // Use actual bitrate for ABR decisions
 
-                // ─── Fragment Loading (UC-Style: aggressive retry + fast timeout) ──
-                fragLoadingMaxRetry: 12,       // UC's "dl_retrycount" — many retries
-                fragLoadingRetryDelay: 100,    // Start retry in 100ms (was 200)
-                fragLoadingMaxRetryTimeout: 12000, // Max 12s retry window
-                manifestLoadingMaxRetry: 10,
-                levelLoadingMaxRetry: 10,
-                manifestLoadingRetryDelay: 200,
-                levelLoadingRetryDelay: 200,
-                // Fragment loading timeout — fail fast and retry (UC-style fast error detection)
-                fragLoadingTimeOut: 15000,
+                // ─── Modern Load Policy (replaces deprecated fragLoading* settings) ──
+                fragLoadPolicy: {
+                    default: {
+                        maxTimeToFirstByteMs: 8000,    // 8s to first byte
+                        maxLoadTimeMs: 20000,          // 20s max per fragment
+                        timeoutRetry: {
+                            maxNumRetry: 4,
+                            retryDelayMs: 500,
+                            maxRetryDelayMs: 8000
+                        },
+                        errorRetry: {
+                            maxNumRetry: 8,            // 8 retries on network errors
+                            retryDelayMs: 200,         // Start fast at 200ms
+                            maxRetryDelayMs: 8000,     // Max 8s between retries
+                            backoff: 'exponential'
+                        }
+                    }
+                },
+                manifestLoadPolicy: {
+                    default: {
+                        maxTimeToFirstByteMs: 10000,
+                        maxLoadTimeMs: 15000,
+                        timeoutRetry: { maxNumRetry: 4, retryDelayMs: 500, maxRetryDelayMs: 4000 },
+                        errorRetry: { maxNumRetry: 6, retryDelayMs: 500, maxRetryDelayMs: 8000, backoff: 'exponential' }
+                    }
+                },
 
-                // ─── Prefetch & Worker (UC-Style: parallel prefetch + worker threads) ──
+                // ─── Prefetch & Worker ──
                 enableWorker: true,            // Offload demuxing to web worker
                 lowLatencyMode: false,
-                progressive: true,             // Progressive fragment delivery (stream while downloading)
+                progressive: true,             // Stream while downloading segments
                 startPosition: -1,
                 testBandwidth: true,
-                startFragPrefetch: true,       // UC's "enable_download_ts_during_hls_parse"
-                highBufferWatchdogPeriod: 1,   // Monitor buffer every 1s
+                startFragPrefetch: true,       // Prefetch next segment during m3u8 parse
+                highBufferWatchdogPeriod: 2,   // Check buffer health every 2s
 
-                // ─── Quality & Recovery (UC-Style: fast switching, compact nudge) ──
-                capLevelToPlayerSize: false,    // Allow full resolution regardless of player size
-                nudgeOffset: 0.2,              // Bigger nudge on stall to skip corrupt data
-                nudgeMaxRetry: 8,              // More nudge attempts before giving up
+                // ─── Quality & Recovery ──
+                capLevelToPlayerSize: true,     // Don't waste bandwidth on resolution > player size
+                capLevelOnFPSDrop: true,        // Auto-drop quality if frames are being dropped
+                stretchShortVideoTrack: true,   // Prevent A/V desync on short segments
+                nudgeOffset: 0.1,              // Small nudge on stall (default)
+                nudgeMaxRetry: 5,              // Standard nudge retries
                 appendErrorMaxRetry: 5,        // Retry on SourceBuffer append errors
             });
 
