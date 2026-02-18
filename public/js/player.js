@@ -15,12 +15,75 @@ const Player = {
     _subtitleBg: 'rgba(0,0,0,0.75)',
     _playbackSpeed: 1,
     _speeds: [0.5, 0.75, 1, 1.25, 1.5, 2],
+    _preferredHeight: 720, // Default to 720p
 
     init() {
         this.iframe = document.getElementById('player-iframe');
         this.video = document.getElementById('player-video');
         this._initSubtitleControls();
         this._initExtraControls();
+        this._initKeyboardControls();
+    },
+
+    // ─── Keyboard Controls (arrows, space, F for fullscreen) ───
+
+    _initKeyboardControls() {
+        document.addEventListener('keydown', (e) => {
+            // Only handle when video is visible and not typing in an input
+            const tag = e.target.tagName.toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+            if (!this.video || this.video.classList.contains('hidden')) return;
+
+            switch (e.code) {
+                case 'Space':
+                    e.preventDefault();
+                    if (this.video.paused) this.video.play().catch(() => {});
+                    else this.video.pause();
+                    break;
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    this.video.currentTime = Math.max(0, this.video.currentTime - 10);
+                    this._showSeekIndicator('-10s');
+                    break;
+                case 'ArrowRight':
+                    e.preventDefault();
+                    this.video.currentTime = Math.min(this.video.duration || Infinity, this.video.currentTime + 10);
+                    this._showSeekIndicator('+10s');
+                    break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    this.video.volume = Math.min(1, this.video.volume + 0.1);
+                    break;
+                case 'ArrowDown':
+                    e.preventDefault();
+                    this.video.volume = Math.max(0, this.video.volume - 0.1);
+                    break;
+                case 'KeyF':
+                    e.preventDefault();
+                    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+                    else this.video.requestFullscreen().catch(() => {});
+                    break;
+                case 'KeyM':
+                    e.preventDefault();
+                    this.video.muted = !this.video.muted;
+                    break;
+            }
+        });
+    },
+
+    _showSeekIndicator(text) {
+        let indicator = document.getElementById('seek-indicator');
+        if (!indicator) {
+            indicator = document.createElement('div');
+            indicator.id = 'seek-indicator';
+            indicator.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.7);color:#fff;padding:10px 20px;border-radius:8px;font-size:1.4rem;font-weight:600;pointer-events:none;z-index:1000;transition:opacity 0.3s;';
+            const playerArea = document.getElementById('player-area');
+            if (playerArea) playerArea.appendChild(indicator);
+        }
+        indicator.textContent = text;
+        indicator.style.opacity = '1';
+        clearTimeout(this._seekIndicatorTimer);
+        this._seekIndicatorTimer = setTimeout(() => { indicator.style.opacity = '0'; }, 800);
     },
 
     // ─── Extra Player Controls (skip, speed, PIP) ───
@@ -167,7 +230,7 @@ const Player = {
             this.hls = new Hls({
                 // ═══ FAST-START STREAMING STRATEGY ═══
                 // Auto quality from start, aggressive prebuffering, minimal stall
-                startLevel: -1,                // AUTO quality (ABR picks best from start)
+                startLevel: -1,                // Will be overridden to 720p after manifest parsed
                 maxBufferLength: 300,          // Buffer up to 5 minutes ahead
                 maxMaxBufferLength: 600,       // Allow up to 10min buffer
                 maxBufferSize: 500 * 1000 * 1000, // 500MB buffer pool
@@ -208,32 +271,17 @@ const Player = {
             this.hls.loadSource(url);
             this.hls.attachMedia(this.video);
 
-            // Track quality — ensure ABR stays in auto mode
-            let hasUpgraded = false;
-            const ensureAutoQuality = () => {
-                if (hasUpgraded || !this.hls) return;
-                const levels = this.hls.levels;
-                if (levels && levels.length > 1) {
-                    // Ensure we're in auto ABR mode
-                    this.hls.currentLevel = -1;
-                    this.hls.nextLevel = -1;
-                    hasUpgraded = true;
-                    console.log('[Player] ABR auto quality confirmed');
-                }
-            };
-
             this.hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
                 this.updateLoading('Stream ready', 'PREPARING HD PLAYBACK', 70);
                 this._populateQualitySelector(data.levels);
+                // Force 720p as default quality
+                this._setPreferred720p(data.levels);
                 this.video.play().catch(() => {});
                 this.restorePosition();
-                // Confirm ABR mode after first fragment loads
-                setTimeout(ensureAutoQuality, 2000);
             });
 
             this.hls.on(Hls.Events.FRAG_BUFFERED, () => {
                 this.updateLoading('Almost ready', 'OPTIMIZING QUALITY', 85);
-                ensureAutoQuality();
             });
 
             // Hide overlay once video starts playing
@@ -355,8 +403,28 @@ const Player = {
             select.appendChild(opt);
         });
 
-        // Default to auto
-        select.value = '-1';
+        // Set quality selector to 720p level if available, else auto
+        const idx720 = sorted.find(l => l.height === 720);
+        select.value = idx720 ? String(idx720.index) : '-1';
+    },
+
+    // Force 720p as default starting quality
+    _setPreferred720p(levels) {
+        if (!this.hls || !levels || levels.length === 0) return;
+        const target = this._preferredHeight;
+        // Find exact 720p or closest <=720p
+        let best = -1;
+        let bestDiff = Infinity;
+        for (let i = 0; i < levels.length; i++) {
+            const diff = Math.abs(levels[i].height - target);
+            if (diff < bestDiff) { best = i; bestDiff = diff; }
+            if (levels[i].height === target) { best = i; break; }
+        }
+        if (best >= 0) {
+            this.hls.currentLevel = best;
+            this.hls.nextLevel = best;
+            console.log(`[Player] Forced ${levels[best].height}p as default quality`);
+        }
     },
 
     _updateCurrentQuality(levelIndex) {
@@ -471,7 +539,7 @@ const Player = {
     // ─── Subtitle Styling ───
 
     setSubtitleFontSize(delta) {
-        this._subtitleFontSize = Math.max(50, Math.min(200, this._subtitleFontSize + delta));
+        this._subtitleFontSize = Math.max(50, Math.min(300, this._subtitleFontSize + delta));
         document.getElementById('sub-size-value').textContent = this._subtitleFontSize + '%';
         this._applySubtitleStyles();
     },
@@ -538,8 +606,12 @@ const Player = {
         // Font size controls
         const sizeMinus = document.getElementById('sub-size-minus');
         const sizePlus = document.getElementById('sub-size-plus');
+        const sizeMinusBig = document.getElementById('sub-size-minus-big');
+        const sizePlusBig = document.getElementById('sub-size-plus-big');
         if (sizeMinus) sizeMinus.addEventListener('click', () => this.setSubtitleFontSize(-10));
         if (sizePlus) sizePlus.addEventListener('click', () => this.setSubtitleFontSize(10));
+        if (sizeMinusBig) sizeMinusBig.addEventListener('click', () => this.setSubtitleFontSize(-25));
+        if (sizePlusBig) sizePlusBig.addEventListener('click', () => this.setSubtitleFontSize(25));
 
         // Background select
         const bgSelect = document.getElementById('sub-bg-select');

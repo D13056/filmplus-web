@@ -27,6 +27,26 @@ try {
 // In-memory cache for TMDB title lookups (avoids repeat API calls)
 const tmdbTitleCache = new Map();
 
+// ─── Stream URL Obfuscation ───
+// Encode/decode stream URLs so real CDN URLs are hidden from browser Network tab
+const STREAM_KEY = crypto.randomBytes(16).toString('hex'); // Random key per server instance
+function encodeStreamUrl(url) {
+    const cipher = crypto.createCipheriv('aes-128-cbc', 
+        Buffer.from(STREAM_KEY, 'hex'), 
+        Buffer.alloc(16, 0));
+    let enc = cipher.update(url, 'utf8', 'base64url');
+    enc += cipher.final('base64url');
+    return enc;
+}
+function decodeStreamUrl(encoded) {
+    const decipher = crypto.createDecipheriv('aes-128-cbc', 
+        Buffer.from(STREAM_KEY, 'hex'), 
+        Buffer.alloc(16, 0));
+    let dec = decipher.update(encoded, 'base64url', 'utf8');
+    dec += decipher.final('utf8');
+    return dec;
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const TMDB_KEY = process.env.TMDB_API_KEY;
@@ -53,6 +73,27 @@ app.use(express.json());
 app.use((req, res, next) => {
     // Permissions-Policy: disable autoplay of ads, prevent popups in iframes
     res.set('Permissions-Policy', 'autoplay=(self), popups=(self)');
+    // Prevent framing by external sites
+    res.set('X-Frame-Options', 'SAMEORIGIN');
+    // Prevent MIME type sniffing
+    res.set('X-Content-Type-Options', 'nosniff');
+    // XSS protection
+    res.set('X-XSS-Protection', '1; mode=block');
+    // Referrer policy — don't leak our URLs
+    res.set('Referrer-Policy', 'no-referrer');
+    // Content Security Policy — restrict what can be loaded
+    res.set('Content-Security-Policy', [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com",
+        "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com",
+        "img-src 'self' https://image.tmdb.org data: blob:",
+        "media-src 'self' blob:",
+        "connect-src 'self'",
+        "frame-src https://www.youtube.com https://www.youtube-nocookie.com",
+        "object-src 'none'",
+        "base-uri 'self'"
+    ].join('; '));
     next();
 });
 
@@ -67,6 +108,17 @@ app.use('/css', (req, res, next) => {
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     next();
 });
+
+// Block access to sensitive files
+app.use((req, res, next) => {
+    const blocked = ['.env', 'server.js', 'package.json', 'package-lock.json', 'node_modules'];
+    const lowerPath = req.path.toLowerCase();
+    if (blocked.some(f => lowerPath.includes(f))) {
+        return res.status(404).send('Not Found');
+    }
+    next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ─── TMDB Proxy Helper ───
@@ -950,10 +1002,10 @@ app.get('/api/extract-stream', async (req, res) => {
         }
 
         // Proxy the stream URL through our server to avoid CORS
-        // Include referer hint if the extractor provides one (e.g. FlixHQ CDNs need streameeeeee.site referer)
-        let proxiedUrl = `/api/stream-proxy?url=${encodeURIComponent(result.streamUrl)}`;
+        // Use encrypted URL token so real CDN URLs are hidden from browser Network tab
+        let proxiedUrl = `/api/s/${encodeStreamUrl(result.streamUrl)}`;
         if (result.referer) {
-            proxiedUrl += `&referer=${encodeURIComponent(result.referer)}`;
+            proxiedUrl += `?r=${encodeStreamUrl(result.referer)}`;
         }
 
         // Proxy subtitle URLs too
@@ -966,7 +1018,6 @@ app.get('/api/extract-stream', async (req, res) => {
         res.json({
             success: true,
             hlsUrl: proxiedUrl,
-            directUrl: result.streamUrl,
             subtitles: proxiedSubs,
             source: result.source,
         });
@@ -976,12 +1027,32 @@ app.get('/api/extract-stream', async (req, res) => {
     }
 });
 
-// ─── HLS/Video Proxy (to bypass CORS for extracted streams) ───
+// ─── HLS/Video Proxy (obfuscated URL format: /api/s/:token) ───
+// Stream URLs are encrypted so they can't be seen in browser Network tab
+app.get('/api/s/:token', async (req, res) => {
+    try {
+        const url = decodeStreamUrl(req.params.token);
+        const customReferer = req.query.r ? decodeStreamUrl(req.query.r) : null;
+        await handleStreamProxy(url, customReferer, res);
+    } catch (e) {
+        console.error('Stream proxy error:', e.message);
+        res.status(500).send('Proxy error');
+    }
+});
+
+// Legacy stream proxy (kept for internal use only, m3u8 rewriting)
 app.get('/api/stream-proxy', async (req, res) => {
     try {
         const { url, referer: customReferer } = req.query;
         if (!url) return res.status(400).json({ error: 'URL required' });
-        
+        await handleStreamProxy(url, customReferer, res);
+    } catch (e) {
+        console.error('Stream proxy error:', e.message);
+        res.status(500).send('Proxy error');
+    }
+});
+
+async function handleStreamProxy(url, customReferer, res) {
         const parsedUrl = new URL(url);
 
         // Determine correct Referer:
@@ -1021,7 +1092,8 @@ app.get('/api/stream-proxy', async (req, res) => {
         res.set('Access-Control-Allow-Origin', '*');
         
         // Propagate referer param for sub-requests (m3u8 → segment URLs)
-        const refererParam = customReferer ? `&referer=${encodeURIComponent(customReferer)}` : '';
+        // Use obfuscated /api/s/ format for all rewritten URLs
+        const refererSuffix = customReferer ? `?r=${encodeStreamUrl(customReferer)}` : '';
         
         // For m3u8 playlists, rewrite ALL URLs to go through our proxy
         if (url.includes('.m3u8') || url.includes('cf-master') || contentType.includes('mpegurl') || contentType.includes('m3u8')) {
@@ -1044,14 +1116,14 @@ app.get('/api/stream-proxy', async (req, res) => {
                 if (trimmed.startsWith('#') && trimmed.includes('URI=')) {
                     return line.replace(/URI="([^"]+)"/g, (match, uri) => {
                         const abs = resolveUrl(uri);
-                        return `URI="${'/api/stream-proxy?url=' + encodeURIComponent(abs) + refererParam}"`;
+                        return `URI="${'/api/s/' + encodeStreamUrl(abs) + refererSuffix}"`;
                     });
                 }
 
                 if (trimmed.startsWith('#')) return line;
                 
                 const absoluteUrl = resolveUrl(trimmed);
-                return `/api/stream-proxy?url=${encodeURIComponent(absoluteUrl)}${refererParam}`;
+                return `/api/s/${encodeStreamUrl(absoluteUrl)}${refererSuffix}`;
             }).join('\n');
             
             res.set('Content-Type', 'application/vnd.apple.mpegurl');
@@ -1063,11 +1135,7 @@ app.get('/api/stream-proxy', async (req, res) => {
             if (contentLength) res.set('Content-Length', contentLength);
             response.body.pipe(res);
         }
-    } catch (e) {
-        console.error('Stream proxy error:', e.message);
-        res.status(500).send('Proxy error');
-    }
-});
+}
 
 app.get('/api/sources', (req, res) => {
     res.json(SOURCE_PROVIDERS);

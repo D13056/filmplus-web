@@ -311,9 +311,11 @@
                         <div class="sub-ctrl-row">
                             <label>Font Size</label>
                             <div class="sub-size-controls">
-                                <button id="sub-size-minus" class="ctrl-btn"><i class="fas fa-minus"></i></button>
+                                <button id="sub-size-minus-big" class="ctrl-btn" title="-25%"><i class="fas fa-minus"></i><i class="fas fa-minus"></i></button>
+                                <button id="sub-size-minus" class="ctrl-btn" title="-10%"><i class="fas fa-minus"></i></button>
                                 <span id="sub-size-value">100%</span>
-                                <button id="sub-size-plus" class="ctrl-btn"><i class="fas fa-plus"></i></button>
+                                <button id="sub-size-plus" class="ctrl-btn" title="+10%"><i class="fas fa-plus"></i></button>
+                                <button id="sub-size-plus-big" class="ctrl-btn" title="+25%"><i class="fas fa-plus"></i><i class="fas fa-plus"></i></button>
                             </div>
                         </div>
                         <div class="sub-ctrl-row">
@@ -458,8 +460,103 @@
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.12/dist/hls.min.js"></script>
     <script src="/js/api.js?v=12"></script>
-    <script src="/js/player.js?v=13"></script>
+    <script src="/js/player.js?v=14"></script>
     <script src="/js/app.js?v=19"></script>
+
+    <!-- Security: Disable right-click, DevTools, source viewing, copy -->
+    <script>
+    (function() {
+        'use strict';
+
+        // === 1) Disable right-click context menu ===
+        document.addEventListener('contextmenu', function(e) {
+            e.preventDefault();
+            return false;
+        });
+
+        // === 2) Disable keyboard shortcuts for DevTools & source view ===
+        document.addEventListener('keydown', function(e) {
+            // F12
+            if (e.key === 'F12' || e.keyCode === 123) {
+                e.preventDefault(); return false;
+            }
+            // Ctrl+Shift+I (Inspect), Ctrl+Shift+J (Console), Ctrl+Shift+C (Element picker)
+            if (e.ctrlKey && e.shiftKey && ['I','J','C','K'].includes(e.key.toUpperCase())) {
+                e.preventDefault(); return false;
+            }
+            // Ctrl+U (View Source)
+            if (e.ctrlKey && e.key.toUpperCase() === 'U') {
+                e.preventDefault(); return false;
+            }
+            // Ctrl+S (Save Page)
+            if (e.ctrlKey && e.key.toUpperCase() === 'S') {
+                e.preventDefault(); return false;
+            }
+            // Ctrl+A (Select All) — block only on main page, not inputs
+            if (e.ctrlKey && e.key.toUpperCase() === 'A') {
+                var tag = e.target.tagName.toLowerCase();
+                if (tag !== 'input' && tag !== 'textarea') {
+                    e.preventDefault(); return false;
+                }
+            }
+            // Ctrl+C (Copy) — block outside inputs
+            if (e.ctrlKey && e.key.toUpperCase() === 'C') {
+                var tag2 = e.target.tagName.toLowerCase();
+                if (tag2 !== 'input' && tag2 !== 'textarea') {
+                    e.preventDefault(); return false;
+                }
+            }
+            // Ctrl+P (Print)
+            if (e.ctrlKey && e.key.toUpperCase() === 'P') {
+                e.preventDefault(); return false;
+            }
+        });
+
+        // === 3) Disable text selection (except in inputs) ===
+        document.addEventListener('selectstart', function(e) {
+            var tag = e.target.tagName.toLowerCase();
+            if (tag !== 'input' && tag !== 'textarea') {
+                e.preventDefault(); return false;
+            }
+        });
+
+        // === 4) Disable drag ===
+        document.addEventListener('dragstart', function(e) {
+            e.preventDefault(); return false;
+        });
+
+        // === 5) Detect DevTools open via debugger timing ===
+        var _dtCheck = setInterval(function() {
+            var start = performance.now();
+            (function(){}).constructor('debugger')();
+            if (performance.now() - start > 100) {
+                // DevTools detected — clear sensitive data from DOM
+                document.title = 'FilmPlus';
+            }
+        }, 3000);
+
+        // === 6) Disable console methods to hide logs ===
+        var _noop = function(){};
+        ['log','debug','info','warn','table','dir','trace','group','groupEnd','groupCollapsed','time','timeEnd','profile','profileEnd','count'].forEach(function(m) {
+            if (window.console && window.console[m]) {
+                window.console[m] = _noop;
+            }
+        });
+        // Keep console.error for critical debugging
+
+        // === 7) Override toString to prevent function source leaks ===
+        var origToString = Function.prototype.toString;
+        Function.prototype.toString = function() {
+            if (this === Function.prototype.toString) return 'function toString() { [native code] }';
+            // For our app functions, return generic signature
+            var str = origToString.call(this);
+            if (str.includes('Player') || str.includes('App') || str.includes('API') || str.includes('extractStream') || str.includes('stream-proxy')) {
+                return 'function() { [protected code] }';
+            }
+            return str;
+        };
+    })();
+    </script>
 
     <!-- Anti-popup & anti-redirect protection -->
     <script>
