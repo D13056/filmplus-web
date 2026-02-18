@@ -79,8 +79,8 @@ app.use((req, res, next) => {
     res.set('X-Content-Type-Options', 'nosniff');
     // XSS protection
     res.set('X-XSS-Protection', '1; mode=block');
-    // Referrer policy — don't leak our URLs
-    res.set('Referrer-Policy', 'no-referrer');
+    // Referrer policy — allow origin so YouTube embeds work (Error 153 fix)
+    res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
     // Content Security Policy — restrict what can be loaded
     res.set('Content-Security-Policy', [
         "default-src 'self'",
