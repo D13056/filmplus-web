@@ -887,7 +887,8 @@ async function extractStreamFromFlixHQ(tmdbId, type, season, episode, server) {
         streamType: 'hls',
         subtitles,
         title: title,
-        referer: sources.headers?.Referer || 'https://streameeeeee.site/'
+        // CDN needs just the origin as referer (not full embed URL path)
+        referer: sources.headers?.Referer ? new URL(sources.headers.Referer).origin + '/' : 'https://streameeeeee.site/'
     };
 }
 
